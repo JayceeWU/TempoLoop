@@ -9,6 +9,7 @@ node_modules/
 .expo/
 dist/
 web-build/
+copypaste/
 expo-env.d.ts
 *.tsbuildinfo
 
