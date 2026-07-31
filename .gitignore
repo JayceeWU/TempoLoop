@@ -1,0 +1,36 @@
+# Local agent contract and environment
+.agent/
+.env
+.env.*
+!.env.example
+
+# Dependencies and Expo
+node_modules/
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+*.tsbuildinfo
+
+# Generated native projects
+/ios/
+/android/
+.kotlin/
+
+# Logs and caches
+*.log
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+.metro-health-check*
+.DS_Store
+
+# Apple and signing credentials
+*.cer
+*.p8
+*.p12
+*.pem
+*.key
+*.mobileprovision
+*.ipa
+credentials.json
