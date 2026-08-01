@@ -350,8 +350,14 @@ export class PlaybackCoordinator {
     }
 
     this.nextGeneration();
-    this.player.pause();
-    this.player.replace(null);
+    // Import validation borrows the shared player while the home screen is
+    // usually already idle. Some Android player implementations reject a
+    // redundant replace(null), so only mutate native state when this
+    // coordinator actually owns a loaded source.
+    if (this.currentSourceUri !== null) {
+      this.player.pause();
+      this.player.replace(null);
+    }
     this.currentSourceUri = null;
     this.currentProjectId = null;
     this.latestNativeStatus = null;

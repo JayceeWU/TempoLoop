@@ -106,6 +106,23 @@ describe('ExpoAudioPartialValidator', () => {
     expect(player.replace).toHaveBeenLastCalledWith(null);
   });
 
+  it('maps shared-player preparation failures to the stable media error code', async () => {
+    const unregisterPreparation = registerImportPlaybackPreparation(() => {
+      throw new Error('native player rejected redundant source clearing');
+    });
+    const createPlayerMock = jest.fn(() => createPlayer(() => undefined));
+    const validator = new ExpoAudioPartialValidator({ createPlayer: createPlayerMock });
+
+    try {
+      await expect(
+        validator.validateLoadable('file:///private/audio.m4a.partial'),
+      ).rejects.toMatchObject({ code: 'E_AUDIO_LOAD_FAILED' });
+      expect(createPlayerMock).not.toHaveBeenCalled();
+    } finally {
+      unregisterPreparation();
+    }
+  });
+
   it('does not accept a stale loaded currentStatus from the previous source', async () => {
     const player = createPlayer(() => undefined);
     Object.defineProperty(player, 'currentStatus', {

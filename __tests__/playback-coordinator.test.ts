@@ -365,6 +365,22 @@ describe('PlaybackCoordinator', () => {
     expect(player.calls.at(-1)).toBe('replace:null');
   });
 
+  it('clears idle coordinator state without mutating the native player', () => {
+    const player = new FakePlayer();
+    const coordinator = createCoordinator(player);
+    const generation = coordinator.getSnapshot().commandGeneration;
+
+    expect(coordinator.clearSource()).toBe(true);
+
+    expect(player.calls).toEqual([]);
+    expect(coordinator.getActiveSourceUri()).toBeNull();
+    expect(coordinator.getSnapshot()).toMatchObject({
+      mode: 'idle',
+      status: 'idle',
+      commandGeneration: generation + 1,
+    });
+  });
+
   it('rejects Android focus-gain auto-resume after an interruption', async () => {
     const player = new FakePlayer();
     const coordinator = createCoordinator(player);

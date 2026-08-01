@@ -71,10 +71,10 @@ The Android native CI job uses Temurin 17 to generate an uncommitted Android pro
 ```bash
 npx expo prebuild --platform android --no-install --clean
 cd android
-./gradlew testDebugUnitTest --stacktrace --no-daemon
-./gradlew verifyMedia3Versions --stacktrace --no-daemon
-./gradlew assembleDebug --stacktrace --no-daemon
-./gradlew assembleDebugAndroidTest --stacktrace --no-daemon
+./gradlew :tempoloop-media:testDebugUnitTest --stacktrace --no-daemon
+./gradlew :tempoloop-media:verifyMedia3Versions --stacktrace --no-daemon
+./gradlew :app:assembleDebug --stacktrace --no-daemon
+./gradlew :tempoloop-media:assembleDebugAndroidTest --stacktrace --no-daemon
 ```
 
 The generated root `/android` directory is intentionally ignored and must not be committed.

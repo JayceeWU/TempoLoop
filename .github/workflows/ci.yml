@@ -96,16 +96,16 @@ jobs:
 
       - name: Run Kotlin unit tests
         working-directory: android
-        run: ./gradlew testDebugUnitTest --stacktrace --no-daemon
+        run: ./gradlew :tempoloop-media:testDebugUnitTest --stacktrace --no-daemon
 
       - name: Verify Media3 versions
         working-directory: android
-        run: ./gradlew verifyMedia3Versions --stacktrace --no-daemon
+        run: ./gradlew :tempoloop-media:verifyMedia3Versions --stacktrace --no-daemon
 
       - name: Assemble debug APK
         working-directory: android
-        run: ./gradlew assembleDebug --stacktrace --no-daemon
+        run: ./gradlew :app:assembleDebug --stacktrace --no-daemon
 
       - name: Compile Android instrumentation tests
         working-directory: android
-        run: ./gradlew assembleDebugAndroidTest --stacktrace --no-daemon
+        run: ./gradlew :tempoloop-media:assembleDebugAndroidTest --stacktrace --no-daemon

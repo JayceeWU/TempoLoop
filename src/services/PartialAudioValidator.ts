@@ -81,7 +81,14 @@ export class ExpoAudioPartialValidator implements PartialAudioValidator {
     this.activeUri = audioUri;
 
     try {
-      prepareSharedAudioPlayerForImport();
+      try {
+        prepareSharedAudioPlayerForImport();
+      } catch (error) {
+        throw validationError(
+          'TempoLoop could not prepare the shared audio player for import validation.',
+          error,
+        );
+      }
       const player = await this.getPlayer();
       if (generation !== this.validationGeneration || this.activeUri !== audioUri) {
         throw validationError('Audio validation was cancelled.');
