@@ -76,29 +76,25 @@ dependencies {
   androidTestImplementation 'androidx.test:runner:1.7.0'
 }
 
-tasks.register('verifyMedia3Versions') {
-  group = 'verification'
-  description =
-    'Fails when Android compile/runtime classpaths resolve Media3 versions that differ from expo-audio.'
+def registerMedia3GraphVerifier = { candidateProject, verifierTaskName ->
+  candidateProject.tasks.register(verifierTaskName) {
+    group = 'verification'
+    description =
+      "Verifies Media3 alignment for ${candidateProject.path} compile/runtime classpaths."
 
-  doLast {
-    def expectedVersion = expoAudioMedia3Version
-    def checkedConfigurations = []
-    def resolvedMedia3 = []
-    def requestedMedia3 = []
+    doLast {
+      def expectedVersion = expoAudioMedia3Version
+      def checkedConfigurations = []
+      def resolvedMedia3 = []
+      def requestedMedia3 = []
 
-    // The application classpaths contain expo-audio and every autolinked local
-    // module. The local library classpaths also make this task useful when the
-    // module is checked independently.
-    def targetProjects = rootProject.allprojects.findAll { candidate ->
-      candidate == project || candidate.plugins.hasPlugin('com.android.application')
-    }
-
-    targetProjects.each { candidateProject ->
       candidateProject.configurations.findAll { configuration ->
-        configuration.canBeResolved &&
-          (configuration.name.toLowerCase().endsWith('compileclasspath') ||
-            configuration.name.toLowerCase().endsWith('runtimeclasspath'))
+        if (!configuration.canBeResolved) {
+          return false
+        }
+        def name = configuration.name.toLowerCase()
+        return !name.contains('androidtest') &&
+          (name.endsWith('compileclasspath') || name.endsWith('runtimeclasspath'))
       }.sort { it.name }.each { configuration ->
         def configurationLabel = "${candidateProject.path}:${configuration.name}"
         def result
@@ -137,50 +133,81 @@ tasks.register('verifyMedia3Versions') {
           }
         }
       }
-    }
 
-    if (checkedConfigurations.isEmpty()) {
-      throw new GradleException(
-        'TempoLoopMedia did not find an Android compile/runtime classpath to verify.'
+      if (checkedConfigurations.isEmpty()) {
+        throw new GradleException(
+          "TempoLoopMedia did not find an Android compile/runtime classpath to verify for " +
+            "${candidateProject.path}."
+        )
+      }
+
+      if (resolvedMedia3.isEmpty()) {
+        throw new GradleException(
+          "TempoLoopMedia found no resolved androidx.media3 components in: " +
+            checkedConfigurations.join(', ')
+        )
+      }
+
+      def resolvedVersions = resolvedMedia3.collect { it.version }.findAll { it }.unique().sort()
+      def requestedVersions = requestedMedia3.collect { it.version }.findAll { it }.unique().sort()
+      def invalidResolvedVersions = resolvedVersions.findAll { it != expectedVersion }
+      def invalidRequestedVersions = requestedVersions.findAll { it != expectedVersion }
+
+      if (resolvedVersions.size() != 1 || !invalidResolvedVersions.isEmpty() ||
+        !invalidRequestedVersions.isEmpty()) {
+        def resolvedSummary = resolvedMedia3
+          .collect { "${it.module}:${it.version} (${it.configuration})" }
+          .unique()
+          .sort()
+          .join('\n  - ')
+        def requestedSummary = requestedMedia3
+          .collect { "${it.module}:${it.version} (${it.configuration})" }
+          .unique()
+          .sort()
+          .join('\n  - ')
+
+        throw new GradleException(
+          "Media3 version alignment failed. expo-audio declares ${expectedVersion}; " +
+            "resolved versions=${resolvedVersions}; requested versions=${requestedVersions}.\n" +
+            "Resolved components:\n  - ${resolvedSummary}\n" +
+            "Requested components:\n  - ${requestedSummary}"
+        )
+      }
+
+      logger.lifecycle(
+        "TempoLoop Media3 alignment verified for ${candidateProject.path}: " +
+          "${expectedVersion} across " +
+          "${checkedConfigurations.size()} Android compile/runtime classpath(s)."
       )
     }
+  }
+}
 
-    if (resolvedMedia3.isEmpty()) {
-      throw new GradleException(
-        "TempoLoopMedia found no resolved androidx.media3 components in: " +
-          checkedConfigurations.join(', ')
-      )
-    }
+// Gradle 9 forbids a task action from resolving configurations owned by a
+// different project. Each verifier therefore belongs to the project whose
+// dependency graph it resolves; this module task only aggregates their result.
+def verifyMedia3VersionsTask = tasks.register('verifyMedia3Versions') {
+  group = 'verification'
+  description =
+    'Fails when Android compile/runtime classpaths resolve Media3 versions that differ from expo-audio.'
+}
 
-    def resolvedVersions = resolvedMedia3.collect { it.version }.findAll { it }.unique().sort()
-    def requestedVersions = requestedMedia3.collect { it.version }.findAll { it }.unique().sort()
-    def invalidResolvedVersions = resolvedVersions.findAll { it != expectedVersion }
-    def invalidRequestedVersions = requestedVersions.findAll { it != expectedVersion }
+def moduleMedia3Verifier = registerMedia3GraphVerifier(
+  project,
+  'verifyTempoLoopMedia3ModuleVersions'
+)
+verifyMedia3VersionsTask.configure {
+  dependsOn(moduleMedia3Verifier)
+}
 
-    if (resolvedVersions.size() != 1 || !invalidResolvedVersions.isEmpty() ||
-      !invalidRequestedVersions.isEmpty()) {
-      def resolvedSummary = resolvedMedia3
-        .collect { "${it.module}:${it.version} (${it.configuration})" }
-        .unique()
-        .sort()
-        .join('\n  - ')
-      def requestedSummary = requestedMedia3
-        .collect { "${it.module}:${it.version} (${it.configuration})" }
-        .unique()
-        .sort()
-        .join('\n  - ')
-
-      throw new GradleException(
-        "Media3 version alignment failed. expo-audio declares ${expectedVersion}; " +
-          "resolved versions=${resolvedVersions}; requested versions=${requestedVersions}.\n" +
-          "Resolved components:\n  - ${resolvedSummary}\n" +
-          "Requested components:\n  - ${requestedSummary}"
-      )
-    }
-
-    logger.lifecycle(
-      "TempoLoop Media3 alignment verified: ${expectedVersion} across " +
-        "${checkedConfigurations.size()} Android compile/runtime classpath(s)."
+rootProject.allprojects { candidateProject ->
+  candidateProject.pluginManager.withPlugin('com.android.application') {
+    def applicationMedia3Verifier = registerMedia3GraphVerifier(
+      candidateProject,
+      'verifyTempoLoopMedia3ApplicationVersions'
     )
+    verifyMedia3VersionsTask.configure {
+      dependsOn(applicationMedia3Verifier)
+    }
   }
 }
