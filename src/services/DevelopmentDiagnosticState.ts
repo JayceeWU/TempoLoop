@@ -1,7 +1,7 @@
 import { developmentLog, type DevelopmentLog } from '@/services/DevelopmentLog';
 
 export interface RecordedDiagnosticErrors {
-  readonly lastNativeErrorCode: string | null;
+  readonly lastMediaErrorCode: string | null;
   readonly lastImportErrorCode: string | null;
 }
 
@@ -24,19 +24,19 @@ function stableErrorCode(error: unknown): string {
   return 'E_UNKNOWN';
 }
 
-function technicalMessage(error: unknown): string {
-  if (error instanceof Error && error.message.length > 0) {
-    return error.message;
-  }
+function stableOperation(value: string): string {
+  return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(value) ? value : 'unknown';
+}
 
-  return 'Unknown error';
+function isSilentCode(code: string): boolean {
+  return code === 'E_IMPORT_CANCELLED';
 }
 
 export class DevelopmentDiagnosticState {
   private readonly enabled: boolean;
   private readonly log: DevelopmentLog;
   private errors: RecordedDiagnosticErrors = {
-    lastNativeErrorCode: null,
+    lastMediaErrorCode: null,
     lastImportErrorCode: null,
   };
 
@@ -45,21 +45,20 @@ export class DevelopmentDiagnosticState {
     this.log = options.log ?? developmentLog;
   }
 
-  recordNativeError(error: unknown, operation: string): void {
+  recordMediaError(error: unknown, operation: string): void {
     if (!this.enabled) {
       return;
     }
 
     const code = stableErrorCode(error);
-    if (code === 'E_CANCELLED') {
+    if (isSilentCode(code)) {
       return;
     }
 
-    this.errors = { ...this.errors, lastNativeErrorCode: code };
-    this.log.record('error', 'native.operation.failed', {
-      operation,
+    this.errors = { ...this.errors, lastMediaErrorCode: code };
+    this.log.record('error', 'media.operation.failed', {
+      operation: stableOperation(operation),
       code,
-      message: technicalMessage(error),
     });
   }
 
@@ -69,15 +68,14 @@ export class DevelopmentDiagnosticState {
     }
 
     const code = stableErrorCode(error);
-    if (code === 'E_CANCELLED') {
+    if (isSilentCode(code)) {
       return;
     }
 
     this.errors = { ...this.errors, lastImportErrorCode: code };
     this.log.record('error', 'import.operation.failed', {
-      operation,
+      operation: stableOperation(operation),
       code,
-      message: technicalMessage(error),
     });
   }
 
@@ -91,7 +89,7 @@ export class DevelopmentDiagnosticState {
     }
 
     this.errors = {
-      lastNativeErrorCode: null,
+      lastMediaErrorCode: null,
       lastImportErrorCode: null,
     };
   }

@@ -46,7 +46,7 @@ export const fontWeights = {
   bold: '700',
 } as const;
 
-export const minimumTapSize = 44;
+export const minimumTapSize = 48;
 
 export const shadows = {
   card: {

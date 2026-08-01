@@ -1,33 +1,57 @@
-import type { PlaybackSnapshot } from '../modules/dance-audio';
-import type { RecoveryReport } from '@/services/RecoveryService';
+import type { PlaybackSnapshot } from '@/domain/playback';
 import { DevelopmentDiagnosticState } from '@/services/DevelopmentDiagnosticState';
 import { DevelopmentLog } from '@/services/DevelopmentLog';
-import {
-  DiagnosticsService,
-  type DiagnosticsPlaybackState,
-  type DiagnosticsProjectState,
-} from '@/services/DiagnosticsService';
+import { DiagnosticsService, type DiagnosticsProjectState } from '@/services/DiagnosticsService';
+import type { RecoveryReport } from '@/services/RecoveryService';
 import { type StorageEntry, type StorageFileSystem, StorageLayout } from '@/services/StorageLayout';
+import type { ImportStoreSnapshot } from '@/stores/useImportStore';
 
-const READY_SNAPSHOT: PlaybackSnapshot = {
-  state: 'ready',
-  currentTimeMs: 12_300,
-  durationMs: 90_000,
+jest.mock('@/services/ImportCoordinator', () => ({
+  importCoordinator: { isImportActive: () => false },
+}));
+
+const PLAYBACK: PlaybackSnapshot = {
+  mode: 'practice',
+  status: 'paused',
+  projectId: 'private-project-id',
+  segmentIndex: 2,
+  sourcePositionMs: 12_300,
+  sourceDurationMs: 90_000,
+  clipStartMs: 6_000,
+  clipEndMs: 20_000,
   rate: 0.8,
-  activeRangeStartMs: 6_000,
-  activeRangeEndMs: 20_000,
+  commandGeneration: 9,
+};
+
+const IMPORT_SNAPSHOT: ImportStoreSnapshot = {
+  status: 'importing',
+  operationId: 'private-operation-id',
+  projectId: 'private-project-id',
+  selectionId: 'private-selection-id',
+  sourceUri: 'content://private.provider/video/42',
+  sourceMetadata: {
+    sourceKindHint: 'video',
+    displayName: 'Private Rehearsal.mov',
+    sizeBytes: 1_024,
+    mimeType: 'video/mp4',
+  },
+  suggestedName: 'Private Rehearsal',
+  projectName: 'Private Rehearsal',
+  cancelRequested: false,
+  terminalError: null,
+  stage: 'waveform',
+  stageProgress: 0.5,
+  overallProgress: 0.75,
 };
 
 class DiagnosticsStorageFileSystem implements StorageFileSystem {
   readonly documentDirectoryUri =
-    'file:///var/mobile/Containers/Data/Application/private-id/Documents';
-  readonly cacheDirectoryUri =
-    'file:///var/mobile/Containers/Data/Application/private-id/Library/Caches';
+    'file:///data/user/0/com.tempoloop.app/files/private-container/Documents';
+  readonly cacheDirectoryUri = 'file:///data/user/0/com.tempoloop.app/cache/private-container';
 
   join(...parts: readonly string[]): string {
     return parts.join('/');
   }
-
   ensureDirectory(): void {}
   directoryExists(): boolean {
     return false;
@@ -53,214 +77,195 @@ class DiagnosticsStorageFileSystem implements StorageFileSystem {
 
 function recoveryReport(): RecoveryReport {
   return {
-    index: { schemaVersion: 1, projects: [] },
-    removedStagingTaskIds: [],
-    removedPickedSelectionIds: [],
-    removedProjectIds: [],
-    orphanProjectIds: ['orphan-id'],
+    removedImportIds: [],
+    removedTemporaryFiles: [],
+    corruptProjectIds: ['private-corrupt-id'],
+    repairProjectIds: ['private-repair-id'],
     diagnostics: [
+      { code: 'CORRUPT_PROJECT_METADATA', projectId: 'private-corrupt-id' },
       {
-        code: 'UNINDEXED_PROJECT_FILES',
-        projectId: 'orphan-id',
+        code: 'PROJECT_NEEDS_REPAIR',
+        projectId: 'private-repair-id',
+        issues: ['WAVEFORM_MISSING'],
       },
     ],
-  };
-}
-
-function playbackState(
-  overrides: Partial<DiagnosticsPlaybackState> = {},
-): DiagnosticsPlaybackState {
-  return {
-    snapshot: READY_SNAPSHOT,
-    loadedAudioUri:
-      'file:///var/mobile/Containers/Data/Application/private-id/Documents/TempoLoop/Projects/project-1/audio.m4a',
-    selectedProjectId: 'project-1',
-    selectedSegment: 2,
-    selectedRate: 0.9,
-    lastError: null,
-    ...overrides,
   };
 }
 
 function projectState(overrides: Partial<DiagnosticsProjectState> = {}): DiagnosticsProjectState {
   return {
     isInitialized: true,
-    projects: [{}, {}],
-    error:
-      'Index failed at file:///var/mobile/Containers/Data/Application/private-id/Documents/TempoLoop/projects.json',
+    projects: [{ name: 'Private Rehearsal' }, { name: 'Secret Routine' }],
+    mediaStatusByProjectId: {
+      ready: { state: 'ready', issues: [] },
+      repair: { state: 'needs-repair', issues: ['WAVEFORM_MISSING'] },
+    },
+    corruptProjectIds: ['private-corrupt-id'],
+    repositoryDiagnostics: [
+      {
+        code: 'PROJECT_NEEDS_REPAIR',
+        projectId: 'private-repair-id',
+        issues: ['WAVEFORM_MISSING'],
+      },
+    ],
+    error: null,
     ...overrides,
   };
 }
 
-describe('DiagnosticsService', () => {
-  test('collects health, playback, storage, repository, import, and redacted paths', async () => {
+describe('Android DiagnosticsService', () => {
+  test('collects only safe module, import, repository, and shared playback state', async () => {
     const log = new DevelopmentLog({
       enabled: true,
       now: () => new Date('2026-07-31T12:00:00.000Z'),
     });
     const diagnosticState = new DevelopmentDiagnosticState({ enabled: true, log });
-    diagnosticState.recordNativeError(
-      Object.assign(new Error('Previous failure'), { code: 'E_SEEK_FAILED' }),
-      'seek',
+    diagnosticState.recordMediaError(
+      Object.assign(new Error('Private Rehearsal failed'), { code: 'E_AUDIO_LOAD_FAILED' }),
+      'loadAudio',
     );
     diagnosticState.recordImportError(
-      Object.assign(new Error('Previous import failure'), {
+      Object.assign(new Error('content://private.provider/video/42'), {
         code: 'E_VIDEO_TOO_LARGE',
       }),
-      'selectVideo',
+      'importProject',
     );
-
     const service = new DiagnosticsService({
-      nativeAudio: {
-        healthCheck: async () => ({ available: true, apiVersion: 1 }),
-      },
+      mediaAvailability: { isAvailable: () => true },
       importCoordinator: { isImportActive: () => true },
       repository: { getLastRecoveryReport: recoveryReport },
-      fileAccess: { getAvailableDiskSpace: () => 2_147_483_648.9 },
+      fileAccess: { getAvailableDiskSpace: () => 2 * 1024 * 1024 * 1024 },
       layout: new StorageLayout(new DiagnosticsStorageFileSystem()),
       diagnosticState,
       log,
-      getPlaybackState: () => playbackState(),
+      getImportState: () => IMPORT_SNAPSHOT,
       getProjectState: () => projectState(),
-      now: () => new Date('2026-07-31T12:30:00.000Z'),
+      getPlaybackSnapshot: () => PLAYBACK,
+      now: () => new Date('2026-07-31T12:00:00.000Z'),
     });
 
     const snapshot = await service.collect();
 
-    expect(snapshot).toMatchObject({
-      generatedAtIso: '2026-07-31T12:30:00.000Z',
-      native: {
-        available: true,
-        apiVersion: 1,
-        lastErrorCode: 'E_SEEK_FAILED',
-      },
-      playback: {
-        state: 'ready',
-        loadedFileUri: '<documents>/TempoLoop/Projects/project-1/audio.m4a',
-        selectedProjectId: 'project-1',
-        selectedSegment: 2,
-        selectedRate: 0.9,
-        currentTimeMs: 12_300,
-        durationMs: 90_000,
-        rate: 0.8,
-      },
-      storage: { availableDiskBytes: 2_147_483_648 },
-      repository: {
-        projectSchemaVersion: 1,
-        waveformSchemaVersion: 1,
-        initialized: true,
-        projectCount: 2,
-        lastError: 'Index failed at <documents>/TempoLoop/projects.json',
-        recoveryDiagnosticCodes: ['UNINDEXED_PROJECT_FILES'],
-      },
-      import: {
-        active: true,
-        lastErrorCode: 'E_VIDEO_TOO_LARGE',
-      },
+    expect(snapshot.media).toEqual({
+      moduleName: 'TempoLoopMedia',
+      available: true,
+      contractVersion: 1,
+      lastErrorCode: 'E_AUDIO_LOAD_FAILED',
     });
-    expect(snapshot.logEntries).toHaveLength(2);
-    expect(JSON.stringify(snapshot)).not.toContain('private-id');
+    expect(snapshot.playback).toMatchObject({
+      mode: 'practice',
+      status: 'paused',
+      sourceLoaded: true,
+      segmentIndex: 2,
+      currentTimeMs: 12_300,
+      durationMs: 90_000,
+      rate: 0.8,
+      activeRangeStartMs: 6_000,
+      activeRangeEndMs: 20_000,
+      commandGeneration: 9,
+    });
+    expect(snapshot.storage).toEqual({
+      availableDiskBytes: 2 * 1024 * 1024 * 1024,
+      rootPath: '<documents>/TempoLoop',
+    });
+    expect(snapshot.repository).toMatchObject({
+      initialized: true,
+      projectCount: 2,
+      readyProjectCount: 1,
+      repairProjectCount: 1,
+      corruptProjectCount: 1,
+      lastErrorCode: null,
+      recoveryDiagnosticCodes: ['CORRUPT_PROJECT_METADATA', 'PROJECT_NEEDS_REPAIR'],
+    });
+    expect(snapshot.import).toEqual({
+      storeStatus: 'importing',
+      coordinatorActive: true,
+      stage: 'waveform',
+      stageProgress: 0.5,
+      overallProgress: 0.75,
+      cancelRequested: false,
+      lastErrorCode: 'E_VIDEO_TOO_LARGE',
+    });
+
+    const serialized = JSON.stringify(snapshot);
+    expect(serialized).not.toContain('Private Rehearsal');
+    expect(serialized).not.toContain('Secret Routine');
+    expect(serialized).not.toContain('content://');
+    expect(serialized).not.toContain('private-container');
+    expect(serialized).not.toContain('private-project-id');
+    expect(serialized).not.toContain('.mov');
   });
 
-  test('handles unavailable native health and unsafe disk values without failing collection', async () => {
-    const log = new DevelopmentLog({ enabled: true });
-    const diagnosticState = new DevelopmentDiagnosticState({ enabled: true, log });
+  test('uses safe unavailable values and a stable repository error code', async () => {
     const service = new DiagnosticsService({
-      nativeAudio: {
-        healthCheck: async () => {
-          throw Object.assign(new Error('Module unavailable'), {
-            code: 'E_INTERNAL',
-          });
+      mediaAvailability: {
+        isAvailable: () => {
+          throw new Error('native registry details');
         },
       },
-      importCoordinator: { isImportActive: () => false },
+      importCoordinator: {
+        isImportActive: () => {
+          throw new Error('coordinator details');
+        },
+      },
       repository: { getLastRecoveryReport: () => null },
-      fileAccess: { getAvailableDiskSpace: () => Number.POSITIVE_INFINITY },
+      fileAccess: {
+        getAvailableDiskSpace: () => {
+          throw new Error('storage details');
+        },
+      },
       layout: new StorageLayout(new DiagnosticsStorageFileSystem()),
-      diagnosticState,
-      log,
-      getPlaybackState: () =>
-        playbackState({
-          snapshot: {
-            ...READY_SNAPSHOT,
-            state: 'idle',
-            currentTimeMs: 0,
-            durationMs: 0,
-          },
-          loadedAudioUri: null,
-          selectedProjectId: null,
-          selectedSegment: null,
+      getImportState: () => ({ ...IMPORT_SNAPSHOT, status: 'idle', stage: null }),
+      getProjectState: () =>
+        projectState({
+          error: 'Failed for Private Rehearsal at file:///private/location/project.json',
         }),
-      getProjectState: () => projectState({ error: null, projects: [] }),
+      getPlaybackSnapshot: () => ({ ...PLAYBACK, mode: 'idle', projectId: null }),
     });
 
     const snapshot = await service.collect();
 
-    expect(snapshot.native).toEqual({
-      available: false,
-      apiVersion: null,
-      lastErrorCode: 'E_INTERNAL',
-    });
+    expect(snapshot.media.available).toBe(false);
     expect(snapshot.storage.availableDiskBytes).toBeNull();
-    expect(snapshot.playback.loadedFileUri).toBeNull();
-    expect(log.getEntries()).toHaveLength(1);
+    expect(snapshot.repository.lastErrorCode).toBe('E_PROJECT_REPOSITORY');
+    expect(snapshot.playback.sourceLoaded).toBe(false);
+    expect(JSON.stringify(snapshot)).not.toContain('Private Rehearsal');
+    expect(JSON.stringify(snapshot)).not.toContain('private/location');
   });
 
-  test('does not duplicate a native-service health failure already recorded at its boundary', async () => {
-    const log = new DevelopmentLog({ enabled: true });
-    const diagnosticState = new DevelopmentDiagnosticState({ enabled: true, log });
-    const nativeFailure = Object.assign(new Error('Module unavailable'), {
-      code: 'E_INTERNAL',
-    });
+  test('accepts the route-provided shared playback snapshot', async () => {
     const service = new DiagnosticsService({
-      nativeAudio: {
-        healthCheck: async () => {
-          diagnosticState.recordNativeError(nativeFailure, 'healthCheck');
-          throw nativeFailure;
-        },
-      },
+      mediaAvailability: { isAvailable: () => true },
       importCoordinator: { isImportActive: () => false },
       repository: { getLastRecoveryReport: () => null },
       fileAccess: { getAvailableDiskSpace: () => 1_000 },
       layout: new StorageLayout(new DiagnosticsStorageFileSystem()),
-      diagnosticState,
-      log,
-      getPlaybackState: () => playbackState(),
-      getProjectState: () => projectState({ error: null }),
+      getImportState: () => ({ ...IMPORT_SNAPSHOT, status: 'idle', stage: null }),
+      getProjectState: () => projectState({ projects: [] }),
+      getPlaybackSnapshot: () => ({ ...PLAYBACK, status: 'error' }),
     });
 
-    await service.collect();
+    const routeSnapshot = { ...PLAYBACK, status: 'playing' as const, sourcePositionMs: 42_000 };
+    const snapshot = await service.collect(routeSnapshot);
 
-    expect(log.getEntries()).toHaveLength(1);
-    expect(log.getEntries()[0]?.event).toBe('native.operation.failed');
+    expect(snapshot.playback.status).toBe('playing');
+    expect(snapshot.playback.currentTimeMs).toBe(42_000);
   });
 
-  test('clears only in-memory diagnostic history', async () => {
+  test('clears only bounded in-memory diagnostic history', () => {
     const log = new DevelopmentLog({ enabled: true });
     const diagnosticState = new DevelopmentDiagnosticState({ enabled: true, log });
     diagnosticState.recordImportError(
-      Object.assign(new Error('Picker failure'), { code: 'E_PICKER_RESULT_INVALID' }),
+      Object.assign(new Error('picker failure'), { code: 'E_SOURCE_UNREADABLE' }),
       'selectVideo',
     );
-    const service = new DiagnosticsService({
-      nativeAudio: {
-        healthCheck: async () => ({ available: true, apiVersion: 1 }),
-      },
-      importCoordinator: { isImportActive: () => false },
-      repository: { getLastRecoveryReport: () => null },
-      fileAccess: { getAvailableDiskSpace: () => 1_000 },
-      layout: new StorageLayout(new DiagnosticsStorageFileSystem()),
-      diagnosticState,
-      log,
-      getPlaybackState: () => playbackState(),
-      getProjectState: () => projectState(),
-    });
+    const service = new DiagnosticsService({ diagnosticState, log });
 
     service.clearRecordedDiagnostics();
 
     expect(service.getLogEntries()).toEqual([]);
     expect(diagnosticState.getSnapshot()).toEqual({
-      lastNativeErrorCode: null,
+      lastMediaErrorCode: null,
       lastImportErrorCode: null,
     });
   });

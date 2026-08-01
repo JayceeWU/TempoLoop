@@ -1,18 +1,29 @@
 import { Directory, File, Paths } from 'expo-file-system';
+import { z } from 'zod';
 
 export const STORAGE_ROOT_DIRECTORY_NAME = 'TempoLoop';
-export const PROJECTS_DIRECTORY_NAME = 'Projects';
-export const STAGING_DIRECTORY_NAME = 'Staging';
-export const PICKED_DIRECTORY_NAME = 'Picked';
-export const PROJECT_INDEX_FILE_NAME = 'projects.json';
-export const PROJECT_INDEX_TEMP_FILE_NAME = 'projects.json.tmp';
-export const PROJECT_INDEX_BACKUP_FILE_NAME = 'projects.json.bak';
+export const PROJECTS_DIRECTORY_NAME = 'projects';
+export const IMPORTS_DIRECTORY_NAME = 'imports';
+export const PROJECT_METADATA_FILE_NAME = 'project.json';
+export const PROJECT_METADATA_TEMP_FILE_NAME = 'project.json.tmp';
+export const PROJECT_METADATA_BACKUP_FILE_NAME = 'project.json.bak';
 export const PROJECT_AUDIO_FILE_NAME = 'audio.m4a';
+export const PROJECT_PARTIAL_AUDIO_FILE_NAME = 'audio.m4a.partial';
 export const PROJECT_WAVEFORM_FILE_NAME = 'waveform.json';
-export const STAGING_AUDIO_FILE_NAME = 'audio.partial.m4a';
-export const STAGING_WAVEFORM_FILE_NAME = 'waveform.partial.json';
-export const PICKED_SOURCE_FILE_BASENAME = 'source';
-export const PICKED_SOURCE_MARKER_FILE_NAME = 'picker-source.json';
+export const PROJECT_WAVEFORM_TEMP_FILE_NAME = 'waveform.json.tmp';
+export const PROJECT_WAVEFORM_BACKUP_FILE_NAME = 'waveform.json.bak';
+export const IMPORT_METADATA_FILE_NAME = 'import.json';
+export const IMPORT_METADATA_TEMP_FILE_NAME = 'import.json.tmp';
+export const IMPORT_DIRECTORY_PREFIX = '.import-';
+
+export const ImportTransactionJournalSchema = z.strictObject({
+  schemaVersion: z.literal(1),
+  projectId: z.string().uuid(),
+  expectedAudioSizeBytes: z.number().finite().int().positive(),
+  durationMs: z.number().finite().int().positive(),
+});
+
+export type ImportTransactionJournal = z.infer<typeof ImportTransactionJournalSchema>;
 
 export type StorageEntryKind = 'file' | 'directory';
 
@@ -26,8 +37,7 @@ export interface StorageEntry {
 
 /**
  * A deliberately small filesystem boundary. Production uses the modern Expo
- * File/Directory/Paths objects, while unit tests can inject an in-memory
- * implementation without mocking native modules.
+ * File/Directory/Paths API; tests inject a memory implementation.
  */
 export interface StorageFileSystem {
   readonly documentDirectoryUri: string;
@@ -43,6 +53,8 @@ export interface StorageFileSystem {
   writeText(uri: string, content: string): void;
   copyFile(sourceUri: string, destinationUri: string): Promise<void>;
   moveFile(sourceUri: string, destinationUri: string): Promise<void>;
+  /** Directory rename is required by the production import transaction. */
+  moveDirectory?(sourceUri: string, destinationUri: string): Promise<void>;
   deleteFile(uri: string): void;
   deleteDirectory(uri: string): void;
 }
@@ -124,6 +136,10 @@ export class ExpoStorageFileSystem implements StorageFileSystem {
     await new File(sourceUri).move(new File(destinationUri), { overwrite: true });
   }
 
+  async moveDirectory(sourceUri: string, destinationUri: string): Promise<void> {
+    await new Directory(sourceUri).move(new Directory(destinationUri));
+  }
+
   deleteFile(uri: string): void {
     const file = new File(uri);
     if (file.exists) {
@@ -145,23 +161,6 @@ function assertSafePathComponent(value: string, label: string): void {
   }
 }
 
-function splitAndValidateRelativePath(relativePath: string): readonly string[] {
-  const normalized = relativePath.replaceAll('\\', '/');
-  const parts = normalized.split('/');
-
-  if (
-    normalized.length === 0 ||
-    normalized.startsWith('/') ||
-    normalized.includes('://') ||
-    parts.some((part) => part.length === 0 || part === '.' || part === '..')
-  ) {
-    throw new Error('Project metadata contains an invalid relative path.');
-  }
-
-  parts.forEach((part) => assertSafePathComponent(part, 'Relative path component'));
-  return parts;
-}
-
 export class StorageLayout {
   constructor(readonly fileSystem: StorageFileSystem = new ExpoStorageFileSystem()) {}
 
@@ -173,41 +172,37 @@ export class StorageLayout {
     return this.fileSystem.join(this.documentsRootUri, PROJECTS_DIRECTORY_NAME);
   }
 
-  get projectIndexUri(): string {
-    return this.fileSystem.join(this.documentsRootUri, PROJECT_INDEX_FILE_NAME);
-  }
-
-  get projectIndexTempUri(): string {
-    return this.fileSystem.join(this.documentsRootUri, PROJECT_INDEX_TEMP_FILE_NAME);
-  }
-
-  get projectIndexBackupUri(): string {
-    return this.fileSystem.join(this.documentsRootUri, PROJECT_INDEX_BACKUP_FILE_NAME);
-  }
-
-  get cacheRootUri(): string {
-    return this.fileSystem.join(this.fileSystem.cacheDirectoryUri, STORAGE_ROOT_DIRECTORY_NAME);
-  }
-
-  get stagingDirectoryUri(): string {
-    return this.fileSystem.join(this.cacheRootUri, STAGING_DIRECTORY_NAME);
-  }
-
-  get pickedDirectoryUri(): string {
-    return this.fileSystem.join(this.cacheRootUri, PICKED_DIRECTORY_NAME);
+  get importsDirectoryUri(): string {
+    return this.fileSystem.join(this.documentsRootUri, IMPORTS_DIRECTORY_NAME);
   }
 
   ensureBaseDirectories(): void {
     this.fileSystem.ensureDirectory(this.documentsRootUri);
     this.fileSystem.ensureDirectory(this.projectsDirectoryUri);
-    this.fileSystem.ensureDirectory(this.cacheRootUri);
-    this.fileSystem.ensureDirectory(this.stagingDirectoryUri);
-    this.fileSystem.ensureDirectory(this.pickedDirectoryUri);
+    this.fileSystem.ensureDirectory(this.importsDirectoryUri);
   }
 
   projectDirectoryUri(projectId: string): string {
     assertSafePathComponent(projectId, 'Project ID');
     return this.fileSystem.join(this.projectsDirectoryUri, projectId);
+  }
+
+  projectMetadataUri(projectId: string): string {
+    return this.fileSystem.join(this.projectDirectoryUri(projectId), PROJECT_METADATA_FILE_NAME);
+  }
+
+  projectMetadataTempUri(projectId: string): string {
+    return this.fileSystem.join(
+      this.projectDirectoryUri(projectId),
+      PROJECT_METADATA_TEMP_FILE_NAME,
+    );
+  }
+
+  projectMetadataBackupUri(projectId: string): string {
+    return this.fileSystem.join(
+      this.projectDirectoryUri(projectId),
+      PROJECT_METADATA_BACKUP_FILE_NAME,
+    );
   }
 
   projectAudioUri(projectId: string): string {
@@ -218,57 +213,91 @@ export class StorageLayout {
     return this.fileSystem.join(this.projectDirectoryUri(projectId), PROJECT_WAVEFORM_FILE_NAME);
   }
 
-  projectAudioRelativePath(projectId: string): string {
-    assertSafePathComponent(projectId, 'Project ID');
-    return `${PROJECTS_DIRECTORY_NAME}/${projectId}/${PROJECT_AUDIO_FILE_NAME}`;
-  }
-
-  projectWaveformRelativePath(projectId: string): string {
-    assertSafePathComponent(projectId, 'Project ID');
-    return `${PROJECTS_DIRECTORY_NAME}/${projectId}/${PROJECT_WAVEFORM_FILE_NAME}`;
-  }
-
-  resolveDocumentRelativePath(relativePath: string): string {
+  projectWaveformTempUri(projectId: string): string {
     return this.fileSystem.join(
-      this.documentsRootUri,
-      ...splitAndValidateRelativePath(relativePath),
+      this.projectDirectoryUri(projectId),
+      PROJECT_WAVEFORM_TEMP_FILE_NAME,
     );
   }
 
-  stagingTaskDirectoryUri(taskId: string): string {
-    assertSafePathComponent(taskId, 'Import task ID');
-    return this.fileSystem.join(this.stagingDirectoryUri, taskId);
+  projectWaveformBackupUri(projectId: string): string {
+    return this.fileSystem.join(
+      this.projectDirectoryUri(projectId),
+      PROJECT_WAVEFORM_BACKUP_FILE_NAME,
+    );
   }
 
-  stagingAudioUri(taskId: string): string {
-    return this.fileSystem.join(this.stagingTaskDirectoryUri(taskId), STAGING_AUDIO_FILE_NAME);
+  importDirectoryUri(projectId: string): string {
+    assertSafePathComponent(projectId, 'Import project ID');
+    return this.fileSystem.join(this.importsDirectoryUri, `${IMPORT_DIRECTORY_PREFIX}${projectId}`);
   }
 
-  stagingWaveformUri(taskId: string): string {
-    return this.fileSystem.join(this.stagingTaskDirectoryUri(taskId), STAGING_WAVEFORM_FILE_NAME);
+  importPartialAudioUri(projectId: string): string {
+    return this.fileSystem.join(
+      this.importDirectoryUri(projectId),
+      PROJECT_PARTIAL_AUDIO_FILE_NAME,
+    );
   }
 
-  pickedSelectionDirectoryUri(selectionId: string): string {
-    assertSafePathComponent(selectionId, 'Picked selection ID');
-    return this.fileSystem.join(this.pickedDirectoryUri, selectionId);
+  importAudioUri(projectId: string): string {
+    return this.fileSystem.join(this.importDirectoryUri(projectId), PROJECT_AUDIO_FILE_NAME);
   }
 
-  pickedSourceUri(selectionId: string, sourceExtension: string): string {
-    if (!/^[a-z0-9]{1,10}$/.test(sourceExtension)) {
-      throw new Error('Picked source extension is not safe.');
+  importWaveformUri(projectId: string): string {
+    return this.fileSystem.join(this.importDirectoryUri(projectId), PROJECT_WAVEFORM_FILE_NAME);
+  }
+
+  importWaveformTempUri(projectId: string): string {
+    return this.fileSystem.join(
+      this.importDirectoryUri(projectId),
+      PROJECT_WAVEFORM_TEMP_FILE_NAME,
+    );
+  }
+
+  importProjectMetadataUri(projectId: string): string {
+    return this.fileSystem.join(this.importDirectoryUri(projectId), PROJECT_METADATA_FILE_NAME);
+  }
+
+  importProjectMetadataTempUri(projectId: string): string {
+    return this.fileSystem.join(
+      this.importDirectoryUri(projectId),
+      PROJECT_METADATA_TEMP_FILE_NAME,
+    );
+  }
+
+  importMetadataUri(projectId: string): string {
+    return this.fileSystem.join(this.importDirectoryUri(projectId), IMPORT_METADATA_FILE_NAME);
+  }
+
+  importMetadataTempUri(projectId: string): string {
+    return this.fileSystem.join(this.importDirectoryUri(projectId), IMPORT_METADATA_TEMP_FILE_NAME);
+  }
+
+  isUriInsideImports(uri: string): boolean {
+    const prefix = `${this.importsDirectoryUri.replace(/\/+$/, '')}/`;
+    if (!uri.startsWith(prefix) || uri.includes('\\')) {
+      return false;
     }
 
-    return this.fileSystem.join(
-      this.pickedSelectionDirectoryUri(selectionId),
-      `${PICKED_SOURCE_FILE_BASENAME}.${sourceExtension}`,
+    try {
+      if (decodeURIComponent(uri) !== uri) {
+        return false;
+      }
+    } catch {
+      return false;
+    }
+
+    const [importDirectoryName, ...descendants] = uri.slice(prefix.length).split('/');
+    return (
+      importDirectoryName !== undefined &&
+      /^\.import-[A-Za-z0-9][A-Za-z0-9._-]*$/.test(importDirectoryName) &&
+      descendants.every((part) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(part))
     );
   }
 
-  pickedSourceMarkerUri(selectionId: string): string {
-    return this.fileSystem.join(
-      this.pickedSelectionDirectoryUri(selectionId),
-      PICKED_SOURCE_MARKER_FILE_NAME,
-    );
+  isImportDirectoryUri(uri: string): boolean {
+    const prefix = `${this.importsDirectoryUri.replace(/\/+$/, '')}/`;
+    return this.isUriInsideImports(uri) && !uri.slice(prefix.length).includes('/');
   }
 }
 

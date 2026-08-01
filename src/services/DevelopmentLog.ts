@@ -26,6 +26,41 @@ export interface DevelopmentLogOptions {
 
 export type DevelopmentLogListener = () => void;
 
+const SAFE_EVENT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/;
+const PRIVATE_CONTEXT_KEY_PATTERN =
+  /^(?:projectName|sourceDisplayName|fileName|waveform|samples|mediaBytes|videoBytes|audioBytes|pcm|base64|arrayBuffer)$/i;
+
+function removePrivateDiagnosticFields(value: unknown): unknown {
+  const visited = new WeakSet<object>();
+
+  function visit(candidate: unknown): unknown {
+    if (candidate === null || typeof candidate !== 'object') {
+      return candidate;
+    }
+    if (visited.has(candidate)) {
+      return '[circular]';
+    }
+    visited.add(candidate);
+
+    if (Array.isArray(candidate)) {
+      return candidate.map(visit);
+    }
+
+    if (candidate instanceof Error) {
+      return 'code' in candidate ? { code: visit(candidate.code) } : { code: 'E_UNKNOWN' };
+    }
+
+    return Object.fromEntries(
+      Object.entries(candidate).map(([key, item]) => [
+        key,
+        PRIVATE_CONTEXT_KEY_PATTERN.test(key) ? '[redacted]' : visit(item),
+      ]),
+    );
+  }
+
+  return visit(value);
+}
+
 export class DevelopmentLog {
   private readonly capacity: number;
   private readonly enabled: boolean;
@@ -54,12 +89,13 @@ export class DevelopmentLog {
       return;
     }
 
+    const safeEvent = SAFE_EVENT_PATTERN.test(event) ? event : 'diagnostic.event';
     const entry: DevelopmentLogEntry = Object.freeze({
       sequence: this.nextSequence,
       timestampIso: this.now().toISOString(),
       level,
-      event: String(sanitizeDiagnosticValue(event, this.pathPrefixes)),
-      context: sanitizeDiagnosticValue(context, this.pathPrefixes),
+      event: safeEvent,
+      context: sanitizeDiagnosticValue(removePrivateDiagnosticFields(context), this.pathPrefixes),
     });
     this.nextSequence += 1;
 

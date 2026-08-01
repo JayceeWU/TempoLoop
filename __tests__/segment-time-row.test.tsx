@@ -9,11 +9,11 @@ describe('SegmentTimeRow', () => {
         durationMs={90_000}
         onClear={jest.fn()}
         onSet={jest.fn()}
-        segment={{ number: 1, startMs: null, endMs: null }}
+        segment={{ id: 'segment-1', index: 0, startMs: null, endMs: null }}
       />,
     );
 
-    expect(screen.getAllByText('--:--.-')).toHaveLength(2);
+    expect(screen.getAllByText('--:--')).toHaveLength(2);
     expect(screen.getByRole('button', { name: 'Clear Segment 1' })).toBeDisabled();
     expect(screen.queryByRole('alert')).toBeNull();
   });
@@ -27,14 +27,14 @@ describe('SegmentTimeRow', () => {
         durationMs={90_000}
         onClear={onClear}
         onSet={onSet}
-        segment={{ number: 2, startMs: 10_400, endMs: null }}
+        segment={{ id: 'segment-2', index: 1, startMs: 10_400, endMs: null }}
       />,
     );
 
     expect(screen.getByRole('alert')).toHaveTextContent(
       'Set both start and end, or clear this segment.',
     );
-    expect(screen.getByText('Start set to 0:10.4')).toBeTruthy();
+    expect(screen.getByText('Start set to 00:10.4')).toBeTruthy();
 
     await fireEvent.press(screen.getByRole('button', { name: 'Set Segment 2 end' }));
     await fireEvent.press(screen.getByRole('button', { name: 'Clear Segment 2' }));
@@ -50,7 +50,7 @@ describe('SegmentTimeRow', () => {
         durationMs={90_000}
         onClear={onClear}
         onSet={jest.fn()}
-        segment={{ number: 3, startMs: 10_000, endMs: null }}
+        segment={{ id: 'segment-3', index: 2, startMs: 10_000, endMs: null }}
         setDisabled
       />,
     );
@@ -61,5 +61,20 @@ describe('SegmentTimeRow', () => {
 
     await fireEvent.press(screen.getByRole('button', { name: 'Clear Segment 3' }));
     expect(onClear).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks the first invalid row without relying on color alone', async () => {
+    const screen = await render(
+      <SegmentTimeRow
+        durationMs={90_000}
+        highlighted
+        onClear={jest.fn()}
+        onSet={jest.fn()}
+        segment={{ id: 'segment-4', index: 3, startMs: 20_000, endMs: 10_000 }}
+      />,
+    );
+
+    expect(screen.getByTestId('segment-time-row-3')).toHaveStyle({ borderWidth: 2 });
+    expect(screen.getByRole('alert')).toHaveTextContent('Start must be earlier than end.');
   });
 });

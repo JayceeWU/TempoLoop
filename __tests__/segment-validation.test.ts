@@ -1,157 +1,137 @@
+import { WAVEFORM_POINT_COUNT } from '@/constants/app';
 import {
   areSegmentsValid,
   createEmptySegments,
   isSegmentConfigured,
   isSegmentValid,
-  type DanceSegments,
 } from '@/domain/segment';
 import {
   DanceProjectSchema,
   DanceSegmentsSchema,
-  ProjectIndexFileSchema,
+  PlaybackRateSchema,
+  StoredWaveformSchema,
 } from '@/domain/validation';
 
 describe('segment validation', () => {
-  it('creates exactly six independently allocated unset segments', () => {
+  it('creates exactly six independently allocated unset segments with fixed IDs and indexes', () => {
     const first = createEmptySegments();
     const second = createEmptySegments();
 
     expect(first).toEqual([
-      { number: 1, startMs: null, endMs: null },
-      { number: 2, startMs: null, endMs: null },
-      { number: 3, startMs: null, endMs: null },
-      { number: 4, startMs: null, endMs: null },
-      { number: 5, startMs: null, endMs: null },
-      { number: 6, startMs: null, endMs: null },
+      { id: 'segment-1', index: 0, startMs: null, endMs: null },
+      { id: 'segment-2', index: 1, startMs: null, endMs: null },
+      { id: 'segment-3', index: 2, startMs: null, endMs: null },
+      { id: 'segment-4', index: 3, startMs: null, endMs: null },
+      { id: 'segment-5', index: 4, startMs: null, endMs: null },
+      { id: 'segment-6', index: 5, startMs: null, endMs: null },
     ]);
     expect(first).toHaveLength(6);
     expect(first[0]).not.toBe(second[0]);
   });
 
   it.each([
-    ['fully unset', null, null, true],
-    ['start only', 1_000, null, false],
-    ['end only', null, 2_000, false],
-    ['equal endpoints', 1_000, 1_000, false],
-    ['start after end', 2_000, 1_000, false],
-    ['end beyond duration', 1_000, 10_001, false],
-    ['valid configured segment', 1_000, 2_000, true],
-  ])('%s has the expected validity', (_label, startMs, endMs, expected) => {
-    const segment = { number: 1 as const, startMs, endMs };
+    ['fully unset', null, null, true, false],
+    ['start only', 1_000, null, false, false],
+    ['end only', null, 2_000, false, false],
+    ['equal endpoints', 1_000, 1_000, false, false],
+    ['start after end', 2_000, 1_000, false, false],
+    ['negative start', -1, 1_000, false, false],
+    ['fractional time', 1_000.5, 2_000, false, false],
+    ['end beyond duration', 1_000, 10_001, false, false],
+    ['valid configured segment', 1_000, 2_000, true, true],
+  ])(
+    '%s has the expected validity',
+    (_label, startMs, endMs, expectedValid, expectedConfigured) => {
+      const segment = { id: 'segment-1' as const, index: 0 as const, startMs, endMs };
 
-    expect(isSegmentValid(segment, 10_000)).toBe(expected);
-    expect(isSegmentConfigured(segment)).toBe(startMs !== null && endMs !== null);
-  });
+      expect(isSegmentValid(segment, 10_000)).toBe(expectedValid);
+      expect(isSegmentConfigured(segment, 10_000)).toBe(expectedConfigured);
+    },
+  );
 
   it('accepts overlapping ranges because segments are independent', () => {
-    const segments: DanceSegments = [
-      { number: 1, startMs: 1_000, endMs: 5_000 },
-      { number: 2, startMs: 3_000, endMs: 7_000 },
-      { number: 3, startMs: null, endMs: null },
-      { number: 4, startMs: null, endMs: null },
-      { number: 5, startMs: null, endMs: null },
-      { number: 6, startMs: null, endMs: null },
-    ];
+    const segments = createEmptySegments();
+    segments[0] = { ...segments[0], startMs: 1_000, endMs: 5_000 };
+    segments[1] = { ...segments[1], startMs: 3_000, endMs: 7_000 };
 
     expect(areSegmentsValid(segments, 10_000)).toBe(true);
     expect(DanceSegmentsSchema.safeParse(segments).success).toBe(true);
   });
 
-  it('requires the strict six-item segment order at runtime', () => {
+  it('requires the strict six-item ID and index order at runtime', () => {
     const segments = createEmptySegments();
     const wrongOrder = [...segments];
-    [wrongOrder[0], wrongOrder[1]] = [wrongOrder[1], wrongOrder[0]];
+    [wrongOrder[0], wrongOrder[1]] = [wrongOrder[1]!, wrongOrder[0]!];
+    const mismatchedIdentity = createEmptySegments();
+    mismatchedIdentity[0] = { ...mismatchedIdentity[0], id: 'segment-2' };
 
     expect(DanceSegmentsSchema.safeParse(segments).success).toBe(true);
     expect(DanceSegmentsSchema.safeParse(segments.slice(0, 5)).success).toBe(false);
     expect(DanceSegmentsSchema.safeParse(wrongOrder).success).toBe(false);
+    expect(DanceSegmentsSchema.safeParse(mismatchedIdentity).success).toBe(false);
   });
 
   it('validates segment endpoints against project duration', () => {
-    const project = {
-      schemaVersion: 1,
-      id: '5ec359a0-2692-4d51-85c4-78d30d695931',
-      name: 'Practice',
-      createdAtIso: '2026-07-30T12:00:00.000Z',
-      updatedAtIso: '2026-07-30T12:00:00.000Z',
-      durationMs: 10_000,
-      sourceVideoBytes: 1_000,
-      audioRelativePath: 'Projects/id/audio.m4a',
-      waveformRelativePath: 'Projects/id/waveform.json',
-      preferredRate: 1,
-      lastSelectedSegment: 1,
-      segments: [
-        { number: 1, startMs: 9_000, endMs: 10_001 },
-        { number: 2, startMs: null, endMs: null },
-        { number: 3, startMs: null, endMs: null },
-        { number: 4, startMs: null, endMs: null },
-        { number: 5, startMs: null, endMs: null },
-        { number: 6, startMs: null, endMs: null },
-      ],
-    };
-
-    expect(DanceProjectSchema.safeParse(project).success).toBe(false);
-  });
-
-  it('rejects duplicate project identities and storage paths', () => {
-    const project = {
-      schemaVersion: 1 as const,
-      id: '5ec359a0-2692-4d51-85c4-78d30d695931',
-      name: 'Practice',
-      createdAtIso: '2026-07-30T12:00:00.000Z',
-      updatedAtIso: '2026-07-30T12:00:00.000Z',
-      durationMs: 10_000,
-      sourceVideoBytes: 1_000,
-      audioRelativePath: 'Projects/5ec359a0-2692-4d51-85c4-78d30d695931/audio.m4a',
-      waveformRelativePath: 'Projects/5ec359a0-2692-4d51-85c4-78d30d695931/waveform.json',
-      preferredRate: 1 as const,
-      lastSelectedSegment: null,
-      segments: createEmptySegments(),
-    };
+    const segments = createEmptySegments();
+    segments[0] = { ...segments[0], startMs: 9_000, endMs: 10_001 };
 
     expect(
-      ProjectIndexFileSchema.safeParse({
+      DanceProjectSchema.safeParse({
         schemaVersion: 1,
-        projects: [project],
-      }).success,
-    ).toBe(true);
-    expect(
-      ProjectIndexFileSchema.safeParse({
-        schemaVersion: 1,
-        projects: [project, { ...project, name: 'Duplicate' }],
+        id: '5ec359a0-2692-4d51-85c4-78d30d695931',
+        name: 'Practice',
+        createdAtIso: '2026-07-30T12:00:00.000Z',
+        updatedAtIso: '2026-07-30T12:00:00.000Z',
+        audioFileName: 'audio.m4a',
+        waveformFileName: 'waveform.json',
+        durationMs: 10_000,
+        sourceDisplayName: null,
+        sourceSizeBytes: null,
+        selectedRate: 1,
+        segments,
       }).success,
     ).toBe(false);
   });
 
-  it('binds each project metadata record to its own sandbox media paths', () => {
-    const id = '5ec359a0-2692-4d51-85c4-78d30d695931';
+  it('accepts only the Android project metadata shape and exact playback rates', () => {
     const project = {
       schemaVersion: 1 as const,
-      id,
+      id: '5ec359a0-2692-4d51-85c4-78d30d695931',
       name: 'Practice',
       createdAtIso: '2026-07-30T12:00:00.000Z',
       updatedAtIso: '2026-07-30T12:00:00.000Z',
+      audioFileName: 'audio.m4a' as const,
+      waveformFileName: 'waveform.json' as const,
       durationMs: 10_000,
-      sourceVideoBytes: 1_000,
-      audioRelativePath: `Projects/${id}/audio.m4a`,
-      waveformRelativePath: `Projects/${id}/waveform.json`,
-      preferredRate: 1 as const,
-      lastSelectedSegment: null,
+      sourceDisplayName: 'dance.mp4',
+      sourceSizeBytes: 1_000,
+      selectedRate: 0.8 as const,
       segments: createEmptySegments(),
     };
 
     expect(DanceProjectSchema.safeParse(project).success).toBe(true);
+    expect(DanceProjectSchema.safeParse({ ...project, preferredRate: 0.8 }).success).toBe(false);
+    expect(DanceProjectSchema.safeParse({ ...project, selectedRate: 0.75 }).success).toBe(false);
+    expect(PlaybackRateSchema.safeParse(0.7).success).toBe(true);
+    expect(PlaybackRateSchema.safeParse(0.75).success).toBe(false);
+  });
+
+  it('requires exactly 2,048 finite normalized waveform samples', () => {
+    const samples = Array.from({ length: WAVEFORM_POINT_COUNT }, () => 0.5);
+    const waveform = {
+      schemaVersion: 1,
+      durationMs: 10_000,
+      sampleCount: WAVEFORM_POINT_COUNT,
+      samples,
+    };
+
+    expect(StoredWaveformSchema.safeParse(waveform).success).toBe(true);
+    expect(StoredWaveformSchema.safeParse({ ...waveform, samples: samples.slice(1) }).success).toBe(
+      false,
+    );
     expect(
-      DanceProjectSchema.safeParse({
-        ...project,
-        audioRelativePath: 'Projects/another-project/audio.m4a',
-      }).success,
-    ).toBe(false);
-    expect(
-      DanceProjectSchema.safeParse({
-        ...project,
-        waveformRelativePath: 'Projects/another-project/waveform.json',
-      }).success,
+      StoredWaveformSchema.safeParse({ ...waveform, samples: [Number.NaN, ...samples.slice(1)] })
+        .success,
     ).toBe(false);
   });
 });

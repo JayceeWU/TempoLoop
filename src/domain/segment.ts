@@ -1,11 +1,21 @@
 import { SEGMENT_COUNT } from '@/constants/app';
 
-export const SEGMENT_NUMBERS = [1, 2, 3, 4, 5, 6] as const;
+export const SEGMENT_INDEXES = [0, 1, 2, 3, 4, 5] as const;
+export const SEGMENT_IDS = [
+  'segment-1',
+  'segment-2',
+  'segment-3',
+  'segment-4',
+  'segment-5',
+  'segment-6',
+] as const;
 
-export type SegmentNumber = (typeof SEGMENT_NUMBERS)[number];
+export type SegmentIndex = (typeof SEGMENT_INDEXES)[number];
+export type SegmentId = (typeof SEGMENT_IDS)[number];
 
 export interface DanceSegment {
-  number: SegmentNumber;
+  id: SegmentId;
+  index: SegmentIndex;
   startMs: number | null;
   endMs: number | null;
 }
@@ -28,8 +38,9 @@ export type SegmentValidationIssue =
   'PARTIAL' | 'NON_INTEGER' | 'OUT_OF_BOUNDS' | 'START_NOT_BEFORE_END';
 
 export function createEmptySegments(): DanceSegments {
-  return SEGMENT_NUMBERS.map((number) => ({
-    number,
+  return SEGMENT_INDEXES.map((index) => ({
+    id: SEGMENT_IDS[index],
+    index,
     startMs: null,
     endMs: null,
   })) as DanceSegments;
@@ -37,10 +48,6 @@ export function createEmptySegments(): DanceSegments {
 
 export function isSegmentUnset(segment: DanceSegment): boolean {
   return segment.startMs === null && segment.endMs === null;
-}
-
-export function isSegmentConfigured(segment: DanceSegment): segment is ConfiguredDanceSegment {
-  return segment.startMs !== null && segment.endMs !== null;
 }
 
 export function getSegmentValidationIssue(
@@ -51,7 +58,7 @@ export function getSegmentValidationIssue(
     return null;
   }
 
-  if (!isSegmentConfigured(segment)) {
+  if (segment.startMs === null || segment.endMs === null) {
     return 'PARTIAL';
   }
 
@@ -74,6 +81,13 @@ export function getSegmentValidationIssue(
   return null;
 }
 
+export function isSegmentConfigured(
+  segment: DanceSegment,
+  durationMs: number,
+): segment is ConfiguredDanceSegment {
+  return !isSegmentUnset(segment) && getSegmentValidationIssue(segment, durationMs) === null;
+}
+
 export function isSegmentValid(segment: DanceSegment, durationMs: number): boolean {
   return getSegmentValidationIssue(segment, durationMs) === null;
 }
@@ -84,9 +98,15 @@ export function areSegmentsValid(
 ): segments is DanceSegments {
   return (
     segments.length === SEGMENT_COUNT &&
-    SEGMENT_NUMBERS.every(
-      (number, index) =>
-        segments[index]?.number === number && isSegmentValid(segments[index], durationMs),
+    SEGMENT_INDEXES.every(
+      (index) =>
+        segments[index]?.index === index &&
+        segments[index]?.id === SEGMENT_IDS[index] &&
+        isSegmentValid(segments[index], durationMs),
     )
   );
+}
+
+export function segmentDisplayNumber(index: SegmentIndex): number {
+  return index + 1;
 }

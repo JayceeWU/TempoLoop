@@ -1,27 +1,33 @@
 import type {
   DanceSegment,
   DanceSegments,
-  SegmentNumber,
+  SegmentIndex,
   SegmentValidationIssue,
 } from '@/domain/segment';
-import { SEGMENT_NUMBERS, areSegmentsValid, getSegmentValidationIssue } from '@/domain/segment';
-import { clampTimeMs, roundToNearest100Ms } from '@/utils/time';
+import {
+  SEGMENT_IDS,
+  SEGMENT_INDEXES,
+  areSegmentsValid,
+  getSegmentValidationIssue,
+} from '@/domain/segment';
+import { clampTimeMs } from '@/utils/time';
 
 export type SegmentEndpoint = 'startMs' | 'endMs';
 
 export function createSegmentDraft(segments: readonly DanceSegment[]): DanceSegments {
-  if (segments.length !== SEGMENT_NUMBERS.length) {
+  if (segments.length !== SEGMENT_INDEXES.length) {
     throw new Error('A segment draft requires exactly six rows.');
   }
 
-  return SEGMENT_NUMBERS.map((number, index) => {
+  return SEGMENT_INDEXES.map((index) => {
     const segment = segments[index];
-    if (segment === undefined || segment.number !== number) {
-      throw new Error('Segment draft rows must be numbered 1 through 6.');
+    if (segment === undefined || segment.index !== index || segment.id !== SEGMENT_IDS[index]) {
+      throw new Error('Segment draft rows must use the fixed segment IDs in index order.');
     }
 
     return {
-      number,
+      id: segment.id,
+      index,
       startMs: segment.startMs,
       endMs: segment.endMs,
     };
@@ -33,15 +39,17 @@ export function segmentDraftsEqual(
   right: readonly DanceSegment[],
 ): boolean {
   return (
-    left.length === SEGMENT_NUMBERS.length &&
-    right.length === SEGMENT_NUMBERS.length &&
-    SEGMENT_NUMBERS.every((number, index) => {
+    left.length === SEGMENT_INDEXES.length &&
+    right.length === SEGMENT_INDEXES.length &&
+    SEGMENT_INDEXES.every((index) => {
       const leftSegment = left[index];
       const rightSegment = right[index];
 
       return (
-        leftSegment?.number === number &&
-        rightSegment?.number === number &&
+        leftSegment?.id === SEGMENT_IDS[index] &&
+        leftSegment.index === index &&
+        rightSegment?.id === SEGMENT_IDS[index] &&
+        rightSegment.index === index &&
         leftSegment.startMs === rightSegment.startMs &&
         leftSegment.endMs === rightSegment.endMs
       );
@@ -51,46 +59,43 @@ export function segmentDraftsEqual(
 
 function replaceSegment(
   draft: DanceSegments,
-  segmentNumber: SegmentNumber,
+  segmentIndex: SegmentIndex,
   replacement: DanceSegment,
 ): DanceSegments {
   return draft.map((segment) =>
-    segment.number === segmentNumber ? { ...replacement } : { ...segment },
+    segment.index === segmentIndex ? { ...replacement } : { ...segment },
   ) as DanceSegments;
 }
 
 export function setDraftEndpoint(
   draft: DanceSegments,
-  segmentNumber: SegmentNumber,
+  segmentIndex: SegmentIndex,
   endpoint: SegmentEndpoint,
   currentTimeMs: number,
   durationMs: number,
 ): DanceSegments {
-  const segment = draft.find((candidate) => candidate.number === segmentNumber);
-  if (segment === undefined) {
+  const segment = draft[segmentIndex];
+  if (segment === undefined || segment.index !== segmentIndex) {
     throw new Error('The requested segment row does not exist.');
   }
 
-  const clamped = clampTimeMs(currentTimeMs, durationMs);
-  const rounded = clampTimeMs(roundToNearest100Ms(clamped), durationMs);
+  const currentIntegerMs = clampTimeMs(currentTimeMs, durationMs);
 
-  return replaceSegment(draft, segmentNumber, {
+  return replaceSegment(draft, segmentIndex, {
     ...segment,
-    [endpoint]: rounded,
+    [endpoint]: currentIntegerMs,
   });
 }
 
-export function clearDraftSegment(
-  draft: DanceSegments,
-  segmentNumber: SegmentNumber,
-): DanceSegments {
-  const segment = draft.find((candidate) => candidate.number === segmentNumber);
-  if (segment === undefined) {
+export function clearDraftSegment(draft: DanceSegments, segmentIndex: SegmentIndex): DanceSegments {
+  const segment = draft[segmentIndex];
+  if (segment === undefined || segment.index !== segmentIndex) {
     throw new Error('The requested segment row does not exist.');
   }
 
-  return replaceSegment(draft, segmentNumber, {
-    number: segmentNumber,
+  return replaceSegment(draft, segmentIndex, {
+    id: segment.id,
+    index: segment.index,
     startMs: null,
     endMs: null,
   });

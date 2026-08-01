@@ -1,127 +1,134 @@
 import { router } from 'expo-router';
-import { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  ActionSheetIOS,
-  ActivityIndicator,
-  Alert,
-  FlatList,
-  Linking,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, FlatList, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { AppButton } from '@/components/AppButton';
 import { EmptyState } from '@/components/EmptyState';
 import { ImportProgressSheet } from '@/components/ImportProgressSheet';
+import { ProjectActionsSheet } from '@/components/ProjectActionsSheet';
+import { ProjectCard } from '@/components/ProjectCard';
 import { ProjectNameSheet } from '@/components/ProjectNameSheet';
-import { MAX_VIDEO_BYTES } from '@/constants/app';
+import { MAX_AUDIO_BYTES, MAX_VIDEO_BYTES } from '@/constants/app';
 import { COPY } from '@/constants/copy';
-import {
-  colors,
-  fontSizes,
-  fontWeights,
-  minimumTapSize,
-  radii,
-  shadows,
-  spacing,
-} from '@/constants/theme';
+import { colors, fontSizes, fontWeights, spacing } from '@/constants/theme';
 import type { DanceProject } from '@/domain/project';
-import { isSegmentConfigured } from '@/domain/segment';
 import { ProjectNameSchema } from '@/domain/validation';
+import { clearProjectPlaybackSource } from '@/playback/PlaybackSourceLifecycle';
 import {
   ImportCoordinatorError,
-  type ImportProgressSnapshot,
-  type SelectedVideo,
+  type SelectedMedia,
   importCoordinator,
 } from '@/services/ImportCoordinator';
-import { usePlaybackStore } from '@/stores/usePlaybackStore';
+import { TempoLoopMediaServiceError } from '@/services/TempoLoopMediaService';
+import { useImportStore } from '@/stores/useImportStore';
 import { useProjectStore } from '@/stores/useProjectStore';
-import { AppError } from '@/utils/errors';
 import { formatBinaryMegabytes } from '@/utils/file';
-import { formatDuration } from '@/utils/time';
+import type { ImportStage } from '../modules/tempoloop-media';
 
-function configuredSegmentCount(project: DanceProject): number {
-  return project.segments.filter(isSegmentConfigured).length;
-}
-
-interface ProjectRowProps {
-  project: DanceProject;
-  isPending: boolean;
-  onDelete: (project: DanceProject) => void;
-  onPress: (projectId: string) => void;
-  onRename: (project: DanceProject) => void;
-  onShowActions: (project: DanceProject) => void;
-}
-
-function ProjectRow({
-  project,
-  isPending,
-  onDelete,
-  onPress,
-  onRename,
-  onShowActions,
-}: ProjectRowProps) {
-  const duration = formatDuration(project.durationMs);
-  const configuredCount = configuredSegmentCount(project);
-  const summary = COPY.projectList.projectSummary(duration, configuredCount);
-
+function isCancellation(error: unknown): boolean {
   return (
-    <Pressable
-      accessibilityHint={COPY.projectList.projectActionsAccessibilityHint}
-      accessibilityLabel={`${project.name}. ${COPY.projectList.projectAccessibilitySummary(
-        duration,
-        configuredCount,
-      )}`}
-      accessibilityRole="button"
-      accessibilityActions={[
-        { name: 'rename', label: COPY.common.rename },
-        { name: 'delete', label: COPY.common.delete },
-      ]}
-      accessibilityState={{ busy: isPending, disabled: isPending }}
-      disabled={isPending}
-      onAccessibilityAction={({ nativeEvent }) => {
-        if (nativeEvent.actionName === 'rename') {
-          onRename(project);
-        } else if (nativeEvent.actionName === 'delete') {
-          onDelete(project);
-        }
-      }}
-      onLongPress={() => onShowActions(project)}
-      onPress={() => onPress(project.id)}
-      style={({ pressed }) => [styles.projectRow, pressed && styles.projectRowPressed]}
-    >
-      <View style={styles.projectText}>
-        <Text numberOfLines={1} style={styles.projectName}>
-          {project.name}
-        </Text>
-        <Text numberOfLines={1} style={styles.projectSummary}>
-          {summary}
-        </Text>
-      </View>
-      <Text accessibilityElementsHidden style={styles.disclosure}>
-        {'\u203a'}
-      </Text>
-    </Pressable>
+    (error instanceof TempoLoopMediaServiceError && error.isCancellation) ||
+    (typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      error.code === 'E_IMPORT_CANCELLED')
   );
 }
 
+function importErrorMessage(error: unknown): string {
+  if (error instanceof TempoLoopMediaServiceError) {
+    return error.userMessage ?? COPY.import.failureMessage;
+  }
+
+  if (error instanceof ImportCoordinatorError) {
+    switch (error.code) {
+      case 'E_AUDIO_TOO_LARGE':
+        return COPY.import.audioTooLargeMessage(
+          formatBinaryMegabytes(error.details.sizeBytes ?? 0),
+          formatBinaryMegabytes(error.details.maxSizeBytes ?? MAX_AUDIO_BYTES),
+        );
+      case 'E_VIDEO_TOO_LARGE':
+        return COPY.import.videoTooLargeMessage(
+          formatBinaryMegabytes(error.details.sizeBytes ?? 0),
+          formatBinaryMegabytes(error.details.maxSizeBytes ?? MAX_VIDEO_BYTES),
+        );
+      default:
+        return COPY.import.pickerErrorMessage;
+    }
+  }
+
+  return COPY.import.failureMessage;
+}
+
+function progressPhaseLabel(stage: ImportStage | null): string {
+  if (stage === null) {
+    return COPY.import.preparing;
+  }
+
+  switch (stage) {
+    case 'inspecting':
+      return COPY.import.inspecting;
+    case 'exporting':
+      return COPY.import.exporting;
+    case 'waveform':
+      return COPY.import.waveform;
+    case 'finalizing':
+      return COPY.import.finalizing;
+  }
+}
+
 export default function ProjectListScreen() {
-  const [selection, setSelection] = useState<SelectedVideo | null>(null);
   const [nameValidationMessage, setNameValidationMessage] = useState<string | null>(null);
-  const [importProgress, setImportProgress] = useState<ImportProgressSnapshot | null>(null);
-  const [isSelectingVideo, setIsSelectingVideo] = useState(false);
-  const [isCancellingImport, setIsCancellingImport] = useState(false);
+  const [actionProject, setActionProject] = useState<DanceProject | null>(null);
+  const [renameProjectTarget, setRenameProjectTarget] = useState<DanceProject | null>(null);
+  const [renameValidationMessage, setRenameValidationMessage] = useState<string | null>(null);
+  const [isRenaming, setIsRenaming] = useState(false);
+
   const selectionRequestInFlightRef = useRef(false);
   const importRequestInFlightRef = useRef(false);
   const cancellationRequestInFlightRef = useRef(false);
+  const renameRequestInFlightRef = useRef(false);
+  const deleteConfirmationProjectIdRef = useRef<string | null>(null);
+
+  const importStatus = useImportStore((state) => state.status);
+  const importSelectionId = useImportStore((state) => state.selectionId);
+  const importSourceUri = useImportStore((state) => state.sourceUri);
+  const importSourceMetadata = useImportStore((state) => state.sourceMetadata);
+  const importSuggestedName = useImportStore((state) => state.suggestedName);
+  const importStage = useImportStore((state) => state.stage);
+  const importStageProgress = useImportStore((state) => state.stageProgress);
+  const importOverallProgress = useImportStore((state) => state.overallProgress);
+  const importCancelRequested = useImportStore((state) => state.cancelRequested);
+
+  const selection = useMemo<SelectedMedia | null>(() => {
+    if (
+      importStatus !== 'selected' ||
+      importSelectionId === null ||
+      importSourceUri === null ||
+      importSourceMetadata === null ||
+      importSuggestedName === null
+    ) {
+      return null;
+    }
+
+    return {
+      selectionId: importSelectionId,
+      sourceKindHint: importSourceMetadata.sourceKindHint,
+      uri: importSourceUri,
+      sizeBytes: importSourceMetadata.sizeBytes,
+      mimeType: importSourceMetadata.mimeType,
+      fileName: importSourceMetadata.displayName,
+      suggestedName: importSuggestedName,
+    };
+  }, [importSelectionId, importSourceMetadata, importSourceUri, importStatus, importSuggestedName]);
+
   const projects = useProjectStore((state) => state.projects);
   const isLoading = useProjectStore((state) => state.isLoading);
   const error = useProjectStore((state) => state.error);
   const pendingProjectId = useProjectStore((state) => state.pendingProjectId);
+  const mediaStatusByProjectId = useProjectStore((state) => state.mediaStatusByProjectId);
   const initialize = useProjectStore((state) => state.initialize);
-  const refresh = useProjectStore((state) => state.refresh);
   const renameProject = useProjectStore((state) => state.renameProject);
   const deleteProject = useProjectStore((state) => state.deleteProject);
 
@@ -133,7 +140,7 @@ export default function ProjectListScreen() {
 
   const loadProjects = useCallback(() => {
     void initialize().catch(() => {
-      // The store exposes the failure through `error`; the screen renders it.
+      // The store exposes a centralized, non-sensitive error state.
     });
   }, [initialize]);
 
@@ -141,85 +148,60 @@ export default function ProjectListScreen() {
     loadProjects();
   }, [loadProjects]);
 
-  const showImportError = useCallback((error: unknown) => {
-    if (error instanceof AppError && error.isCancellation) {
+  const showImportError = useCallback((caught: unknown) => {
+    if (isCancellation(caught)) {
       return;
     }
 
-    if (error instanceof ImportCoordinatorError && error.code === 'E_PHOTO_PERMISSION_DENIED') {
-      Alert.alert(COPY.import.permissionTitle, COPY.import.permissionMessage, [
-        { style: 'cancel', text: COPY.common.cancel },
-        {
-          text: COPY.common.settings,
-          onPress: () => {
-            void Linking.openSettings();
-          },
-        },
-      ]);
-      return;
-    }
-
-    let message: string = COPY.import.failureMessage;
-    if (error instanceof AppError) {
-      message = error.userMessage ?? COPY.import.failureMessage;
-    } else if (error instanceof ImportCoordinatorError) {
-      switch (error.code) {
-        case 'E_NOT_A_VIDEO':
-          message = COPY.import.notVideoMessage;
-          break;
-        case 'E_FILE_SIZE_UNAVAILABLE':
-          message = COPY.import.sizeUnavailableMessage;
-          break;
-        case 'E_VIDEO_TOO_LARGE':
-          message = COPY.import.videoTooLargeMessage(
-            formatBinaryMegabytes(error.details.sizeBytes ?? 0),
-            formatBinaryMegabytes(error.details.maxSizeBytes ?? MAX_VIDEO_BYTES),
-          );
-          break;
-        case 'E_INSUFFICIENT_STORAGE':
-          message = COPY.import.insufficientStorageMessage;
-          break;
-        default:
-          message = COPY.import.pickerErrorMessage;
-      }
-    }
-
-    Alert.alert(COPY.import.failureTitle, message);
+    Alert.alert(COPY.import.failureTitle, importErrorMessage(caught));
   }, []);
 
-  const handleImport = useCallback(() => {
-    if (
-      selectionRequestInFlightRef.current ||
-      isSelectingVideo ||
-      selection !== null ||
-      importProgress !== null ||
-      importCoordinator.isImportActive()
-    ) {
-      return;
-    }
+  const importUiActive =
+    importStatus === 'selecting' ||
+    importStatus === 'selected' ||
+    importStatus === 'importing' ||
+    importStatus === 'cancelling';
+  const importProgressVisible = importStatus === 'importing' || importStatus === 'cancelling';
+  const displayedProgress = importOverallProgress ?? importStageProgress;
 
-    selectionRequestInFlightRef.current = true;
-    setIsSelectingVideo(true);
-    void importCoordinator
-      .selectVideo()
-      .then((selectedVideo) => {
-        if (selectedVideo !== null) {
-          setNameValidationMessage(null);
-          setSelection(selectedVideo);
-        }
-      })
-      .catch(showImportError)
-      .finally(() => {
-        selectionRequestInFlightRef.current = false;
-        setIsSelectingVideo(false);
-      });
-  }, [importProgress, isSelectingVideo, selection, showImportError]);
+  const beginSelection = useCallback(
+    (select: () => Promise<SelectedMedia | null>) => {
+      if (
+        selectionRequestInFlightRef.current ||
+        selection !== null ||
+        importUiActive ||
+        importCoordinator.isImportActive()
+      ) {
+        return;
+      }
+
+      selectionRequestInFlightRef.current = true;
+      void select()
+        .then((selectedMedia) => {
+          if (selectedMedia !== null) {
+            setNameValidationMessage(null);
+          }
+        })
+        .catch(showImportError)
+        .finally(() => {
+          selectionRequestInFlightRef.current = false;
+        });
+    },
+    [importUiActive, selection, showImportError],
+  );
+
+  const handleExtractFromVideo = useCallback(() => {
+    beginSelection(() => importCoordinator.selectVideoFromGallery());
+  }, [beginSelection]);
+
+  const handleImportAudio = useCallback(() => {
+    beginSelection(() => importCoordinator.selectAudio());
+  }, [beginSelection]);
 
   const handleCancelNaming = useCallback(() => {
     if (selection !== null) {
       importCoordinator.discardSelection(selection);
     }
-    setSelection(null);
     setNameValidationMessage(null);
   }, [selection]);
 
@@ -241,11 +223,6 @@ export default function ProjectListScreen() {
 
       importRequestInFlightRef.current = true;
       setNameValidationMessage(null);
-      setImportProgress({
-        taskId: 'preparing',
-        phase: 'preparing',
-        progress: 0,
-      });
 
       void (async () => {
         let project: DanceProject;
@@ -253,15 +230,20 @@ export default function ProjectListScreen() {
           project = await importCoordinator.importProject({
             selection,
             name: parsedName.data,
-            onProgress: setImportProgress,
           });
-        } catch (error) {
-          showImportError(error);
+        } catch (caught) {
+          if (
+            caught instanceof ImportCoordinatorError &&
+            caught.code === 'E_POST_COMMIT_REFRESH_FAILED'
+          ) {
+            Alert.alert(COPY.import.postCommitTitle, COPY.import.postCommitMessage);
+            return;
+          }
+          showImportError(caught);
           return;
         }
 
         try {
-          await refresh();
           router.replace({
             pathname: '/project/[projectId]',
             params: { projectId: project.id },
@@ -271,29 +253,24 @@ export default function ProjectListScreen() {
         }
       })().finally(() => {
         importRequestInFlightRef.current = false;
-        setSelection(null);
-        setImportProgress(null);
-        setIsCancellingImport(false);
       });
     },
-    [refresh, selection, showImportError],
+    [selection, showImportError],
   );
 
   const handleCancelImport = useCallback(() => {
-    if (cancellationRequestInFlightRef.current || isCancellingImport) {
+    if (cancellationRequestInFlightRef.current || importCancelRequested) {
       return;
     }
 
     cancellationRequestInFlightRef.current = true;
-    setIsCancellingImport(true);
     void importCoordinator
       .cancelActiveImport()
       .catch(showImportError)
       .finally(() => {
         cancellationRequestInFlightRef.current = false;
-        setIsCancellingImport(false);
       });
-  }, [isCancellingImport, showImportError]);
+  }, [importCancelRequested, showImportError]);
 
   const handleOpenProject = useCallback((projectId: string) => {
     router.push({
@@ -306,86 +283,111 @@ export default function ProjectListScreen() {
     Alert.alert(COPY.projectList.actionErrorTitle, COPY.projectList.actionErrorMessage);
   }, []);
 
-  const handleRename = useCallback(
-    (project: DanceProject) => {
-      Alert.prompt(
-        COPY.projectList.renameTitle,
-        COPY.projectList.renameMessage,
-        [
-          { style: 'cancel', text: COPY.common.cancel },
-          {
-            text: COPY.common.rename,
-            onPress: (name?: string) => {
-              if (name === undefined) {
-                return;
-              }
+  const handleShowActions = useCallback((project: DanceProject) => {
+    setActionProject((current) => current ?? project);
+  }, []);
 
-              void renameProject(project.id, name).catch(showActionError);
-            },
-          },
-        ],
-        'plain-text',
-        project.name,
-      );
+  const handleDismissActions = useCallback(() => {
+    setActionProject(null);
+  }, []);
+
+  const handleStartRename = useCallback((project: DanceProject) => {
+    setActionProject(null);
+    setRenameValidationMessage(null);
+    setRenameProjectTarget(project);
+  }, []);
+
+  const handleCancelRename = useCallback(() => {
+    if (!renameRequestInFlightRef.current) {
+      setRenameProjectTarget(null);
+      setRenameValidationMessage(null);
+    }
+  }, []);
+
+  const handleConfirmRename = useCallback(
+    (name: string) => {
+      if (renameProjectTarget === null || renameRequestInFlightRef.current) {
+        return;
+      }
+
+      const parsedName = ProjectNameSchema.safeParse(name);
+      if (!parsedName.success) {
+        setRenameValidationMessage(COPY.import.invalidName);
+        return;
+      }
+
+      renameRequestInFlightRef.current = true;
+      setIsRenaming(true);
+      setRenameValidationMessage(null);
+      void renameProject(renameProjectTarget.id, parsedName.data)
+        .then(() => {
+          setRenameProjectTarget(null);
+        })
+        .catch(showActionError)
+        .finally(() => {
+          renameRequestInFlightRef.current = false;
+          setIsRenaming(false);
+        });
     },
-    [renameProject, showActionError],
+    [renameProject, renameProjectTarget, showActionError],
   );
 
   const handleDelete = useCallback(
     (project: DanceProject) => {
-      Alert.alert(COPY.projectList.deleteTitle(project.name), COPY.projectList.deleteMessage, [
-        { style: 'cancel', text: COPY.common.cancel },
-        {
-          style: 'destructive',
-          text: COPY.common.delete,
-          onPress: () => {
-            void (async () => {
-              const playback = usePlaybackStore.getState();
-              if (playback.selectedProjectId === project.id) {
-                await playback.unload();
-              }
-              await deleteProject(project.id);
-            })().catch(showActionError);
-          },
-        },
-      ]);
-    },
-    [deleteProject, showActionError],
-  );
+      if (deleteConfirmationProjectIdRef.current !== null || pendingProjectId === project.id) {
+        return;
+      }
 
-  const handleShowActions = useCallback(
-    (project: DanceProject) => {
-      ActionSheetIOS.showActionSheetWithOptions(
+      setActionProject(null);
+      deleteConfirmationProjectIdRef.current = project.id;
+      const clearConfirmationGuard = () => {
+        if (deleteConfirmationProjectIdRef.current === project.id) {
+          deleteConfirmationProjectIdRef.current = null;
+        }
+      };
+
+      Alert.alert(
+        COPY.projectList.deleteTitle(project.name),
+        COPY.projectList.deleteMessage,
+        [
+          {
+            onPress: clearConfirmationGuard,
+            style: 'cancel',
+            text: COPY.common.cancel,
+          },
+          {
+            onPress: () => {
+              clearConfirmationGuard();
+              void (async () => {
+                await clearProjectPlaybackSource(project.id);
+                await deleteProject(project.id);
+              })().catch(showActionError);
+            },
+            style: 'destructive',
+            text: COPY.common.delete,
+          },
+        ],
         {
-          cancelButtonIndex: 0,
-          destructiveButtonIndex: 2,
-          options: [COPY.common.cancel, COPY.common.rename, COPY.common.delete],
-          title: COPY.projectList.projectActionsTitle(project.name),
-        },
-        (selectedIndex) => {
-          if (selectedIndex === 1) {
-            handleRename(project);
-          } else if (selectedIndex === 2) {
-            handleDelete(project);
-          }
+          cancelable: true,
+          onDismiss: clearConfirmationGuard,
         },
       );
     },
-    [handleDelete, handleRename],
+    [deleteProject, pendingProjectId, showActionError],
   );
 
   const renderProject = useCallback(
     ({ item }: { item: DanceProject }) => (
-      <ProjectRow
+      <ProjectCard
         isPending={pendingProjectId === item.id}
+        mediaStatus={mediaStatusByProjectId[item.id] ?? null}
         onDelete={handleDelete}
-        onPress={handleOpenProject}
-        onRename={handleRename}
+        onOpen={handleOpenProject}
         onShowActions={handleShowActions}
         project={item}
       />
     ),
-    [handleDelete, handleOpenProject, handleRename, handleShowActions, pendingProjectId],
+    [handleDelete, handleOpenProject, handleShowActions, mediaStatusByProjectId, pendingProjectId],
   );
 
   const emptyContent = isLoading ? (
@@ -408,12 +410,7 @@ export default function ProjectListScreen() {
     </View>
   ) : (
     <View style={styles.centeredState}>
-      <EmptyState
-        actionLabel={COPY.projectList.emptyAction}
-        message={COPY.projectList.emptyMessage}
-        onAction={handleImport}
-        title={COPY.projectList.emptyTitle}
-      />
+      <EmptyState message={COPY.projectList.emptyMessage} title={COPY.projectList.emptyTitle} />
     </View>
   );
 
@@ -429,22 +426,26 @@ export default function ProjectListScreen() {
         >
           {COPY.appName}
         </Text>
-        <Pressable
-          accessibilityLabel={COPY.projectList.addProjectAccessibilityLabel}
-          accessibilityRole="button"
-          disabled={isLoading || isSelectingVideo || importProgress !== null}
-          hitSlop={4}
-          onPress={handleImport}
-          style={({ pressed }) => [
-            styles.addButton,
-            pressed && styles.addButtonPressed,
-            (isLoading || isSelectingVideo || importProgress !== null) && styles.addButtonDisabled,
-          ]}
-        >
-          <Text accessibilityElementsHidden style={styles.addButtonLabel}>
-            +
-          </Text>
-        </Pressable>
+      </View>
+
+      <View style={styles.importActions}>
+        <AppButton
+          accessibilityHint={COPY.projectList.extractVideoAccessibilityHint}
+          disabled={isLoading || importUiActive}
+          fullWidth
+          label={COPY.projectList.extractVideo}
+          onPress={handleExtractFromVideo}
+          size="large"
+        />
+        <AppButton
+          accessibilityHint={COPY.projectList.importAudioAccessibilityHint}
+          disabled={isLoading || importUiActive}
+          fullWidth
+          label={COPY.projectList.importAudio}
+          onPress={handleImportAudio}
+          size="large"
+          variant="secondary"
+        />
       </View>
 
       <FlatList
@@ -462,7 +463,7 @@ export default function ProjectListScreen() {
 
       {selection !== null ? (
         <ProjectNameSheet
-          key={selection.uri}
+          key={selection.selectionId}
           cancelLabel={COPY.common.cancel}
           confirmLabel={COPY.import.confirmLabel}
           initialName={selection.suggestedName}
@@ -472,22 +473,61 @@ export default function ProjectListScreen() {
           onConfirm={handleConfirmImport}
           title={COPY.import.namingTitle}
           validationMessage={nameValidationMessage}
-          visible={importProgress === null}
+          visible={importStatus === 'selected'}
         />
       ) : null}
 
       <ImportProgressSheet
-        cancelLabel={isCancellingImport ? COPY.import.cancelling : COPY.import.cancelLabel}
-        isCancelling={isCancellingImport}
+        cancelLabel={importCancelRequested ? COPY.import.cancelling : COPY.import.cancelLabel}
+        isCancelling={importCancelRequested}
         keepOpenMessage={COPY.import.keepOpen}
         onCancel={handleCancelImport}
-        phaseLabel={
-          importProgress === null ? COPY.import.preparing : COPY.import[importProgress.phase]
-        }
-        progress={importProgress?.progress ?? null}
+        phaseLabel={progressPhaseLabel(importStage)}
+        progress={displayedProgress}
         title={COPY.import.title}
-        visible={importProgress !== null}
+        visible={importProgressVisible}
       />
+
+      <ProjectActionsSheet
+        cancelLabel={COPY.common.cancel}
+        deleteLabel={COPY.common.delete}
+        onCancel={handleDismissActions}
+        onDelete={() => {
+          if (actionProject !== null) {
+            handleDelete(actionProject);
+          }
+        }}
+        onRename={() => {
+          if (actionProject !== null) {
+            handleStartRename(actionProject);
+          }
+        }}
+        projectName={actionProject?.name ?? ''}
+        renameLabel={COPY.common.rename}
+        title={
+          actionProject === null
+            ? COPY.projectList.projectActionsTitle('')
+            : COPY.projectList.projectActionsTitle(actionProject.name)
+        }
+        visible={actionProject !== null}
+      />
+
+      {renameProjectTarget !== null ? (
+        <ProjectNameSheet
+          key={`rename-${renameProjectTarget.id}`}
+          cancelLabel={COPY.common.cancel}
+          confirmLabel={COPY.common.rename}
+          initialName={renameProjectTarget.name}
+          inputLabel={COPY.import.nameInputLabel}
+          isBusy={isRenaming}
+          message={COPY.projectList.renameMessage}
+          onCancel={handleCancelRename}
+          onConfirm={handleConfirmRename}
+          title={COPY.projectList.renameTitle}
+          validationMessage={renameValidationMessage}
+          visible
+        />
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -511,29 +551,10 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.bold,
     letterSpacing: -0.8,
   },
-  addButton: {
-    alignItems: 'center',
-    backgroundColor: colors.accent,
-    borderRadius: radii.pill,
-    height: 52,
-    justifyContent: 'center',
-    minHeight: minimumTapSize,
-    minWidth: minimumTapSize,
-    width: 52,
-  },
-  addButtonPressed: {
-    backgroundColor: colors.accentPressed,
-    transform: [{ scale: 0.98 }],
-  },
-  addButtonDisabled: {
-    backgroundColor: colors.disabledBackground,
-  },
-  addButtonLabel: {
-    color: colors.textOnAccent,
-    fontSize: 34,
-    fontWeight: fontWeights.medium,
-    lineHeight: 36,
-    marginTop: -2,
+  importActions: {
+    gap: spacing.sm,
+    paddingBottom: spacing.md,
+    paddingHorizontal: spacing.lg,
   },
   listContent: {
     paddingBottom: spacing.xxl,
@@ -552,43 +573,6 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     fontSize: fontSizes.body,
     marginTop: spacing.sm,
-  },
-  projectRow: {
-    alignItems: 'center',
-    backgroundColor: colors.surface,
-    borderColor: colors.border,
-    borderRadius: radii.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    flexDirection: 'row',
-    minHeight: 88,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.md,
-    ...shadows.card,
-  },
-  projectRowPressed: {
-    backgroundColor: colors.surfacePressed,
-    transform: [{ scale: 0.995 }],
-  },
-  projectText: {
-    flex: 1,
-    minWidth: 0,
-  },
-  projectName: {
-    color: colors.text,
-    fontSize: 18,
-    fontWeight: fontWeights.semibold,
-    lineHeight: 24,
-  },
-  projectSummary: {
-    color: colors.textMuted,
-    fontSize: fontSizes.caption,
-    lineHeight: 18,
-    marginTop: spacing.xxs,
-  },
-  disclosure: {
-    color: colors.textMuted,
-    fontSize: 28,
-    marginLeft: spacing.sm,
   },
   separator: {
     height: spacing.sm,

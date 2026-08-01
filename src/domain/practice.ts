@@ -1,11 +1,9 @@
-import type { NativePlaybackState, PlaybackSnapshot } from '../../modules/dance-audio';
-import type { PlaybackRange } from '@/domain/playback';
+import type { PlaybackRange, PlaybackSnapshot, PlaybackStatus } from '@/domain/playback';
 import type { DanceProject } from '@/domain/project';
 import {
   type ConfiguredDanceSegment,
   type DanceSegment,
-  type SegmentNumber,
-  getSegmentValidationIssue,
+  type SegmentIndex,
   isSegmentConfigured,
 } from '@/domain/segment';
 
@@ -15,18 +13,18 @@ export function isPracticeSegmentConfigured(
   segment: DanceSegment,
   durationMs: number,
 ): segment is ConfiguredDanceSegment {
-  return isSegmentConfigured(segment) && getSegmentValidationIssue(segment, durationMs) === null;
+  return isSegmentConfigured(segment, durationMs);
 }
 
 export function getConfiguredPracticeSegment(
   project: DanceProject,
-  segmentNumber: SegmentNumber | null,
+  segmentIndex: SegmentIndex | null,
 ): ConfiguredDanceSegment | null {
-  if (segmentNumber === null) {
+  if (segmentIndex === null) {
     return null;
   }
 
-  const segment = project.segments.find((candidate) => candidate.number === segmentNumber);
+  const segment = project.segments.find((candidate) => candidate.index === segmentIndex);
 
   return segment !== undefined && isPracticeSegmentConfigured(segment, project.durationMs)
     ? segment
@@ -34,42 +32,37 @@ export function getConfiguredPracticeSegment(
 }
 
 /**
- * Uses the saved segment only when it is still complete and valid, otherwise
- * chooses the first valid configured segment in display order.
+ * Practice entry always chooses the first valid configured segment in display
+ * order. Segment selection is session state and is not persisted in a Project.
  */
-export function selectInitialPracticeSegment(project: DanceProject): SegmentNumber | null {
-  const saved = getConfiguredPracticeSegment(project, project.lastSelectedSegment);
-  if (saved !== null) {
-    return saved.number;
-  }
-
+export function selectInitialPracticeSegment(project: DanceProject): SegmentIndex | null {
   return (
     project.segments.find((segment) => isPracticeSegmentConfigured(segment, project.durationMs))
-      ?.number ?? null
+      ?.index ?? null
   );
 }
 
-export function isPracticeAudioReady(state: NativePlaybackState): boolean {
-  return state === 'ready' || state === 'playing' || state === 'paused';
+export function isPracticeAudioReady(status: PlaybackStatus): boolean {
+  return status === 'ready' || status === 'playing' || status === 'paused' || status === 'ended';
 }
 
 export function getPracticePlaybackIntent(
   snapshot: PlaybackSnapshot,
   selectedRange: PlaybackRange,
 ): PracticePlaybackIntent | null {
-  if (snapshot.state === 'playing') {
+  if (snapshot.status === 'playing') {
     return 'pause';
   }
 
   if (
-    snapshot.state === 'paused' &&
-    snapshot.activeRangeStartMs === selectedRange.playFromMs &&
-    snapshot.activeRangeEndMs === selectedRange.stopAtMs
+    snapshot.status === 'paused' &&
+    snapshot.clipStartMs === selectedRange.playFromMs &&
+    snapshot.clipEndMs === selectedRange.stopAtMs
   ) {
     return 'resume';
   }
 
-  if (snapshot.state === 'ready' || snapshot.state === 'paused') {
+  if (snapshot.status === 'ready' || snapshot.status === 'paused' || snapshot.status === 'ended') {
     return 'play-range';
   }
 
@@ -84,7 +77,8 @@ export function canTogglePracticePlayback(
   return (
     selectedRange !== null &&
     !hasPendingCommand &&
-    isPracticeAudioReady(snapshot.state) &&
+    snapshot.mode === 'practice' &&
+    isPracticeAudioReady(snapshot.status) &&
     getPracticePlaybackIntent(snapshot, selectedRange) !== null
   );
 }

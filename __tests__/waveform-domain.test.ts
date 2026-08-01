@@ -1,6 +1,7 @@
 import {
   MAX_WAVEFORM_RENDER_BARS,
   clampWaveformPosition,
+  createWaveformPathData,
   downsampleWaveform,
   getWaveformRenderBarCount,
   waveformPositionFromX,
@@ -45,6 +46,23 @@ describe('waveform domain', () => {
     expect(waveformPositionFromX(250, 200, 60_000)).toBe(60_000);
     expect(clampWaveformPosition(60_000.6, 60_000)).toBe(60_000);
     expect(clampWaveformPosition(-5, 60_000)).toBe(0);
+  });
+
+  test('builds one upper path and an optional mirrored lower path', () => {
+    const mirrored = createWaveformPathData([0, 0.5, 1], 200, 100, 10);
+
+    expect(mirrored.upper).toBe('M0 50.00 L0.00 50.00 L100.00 30.00 L200.00 10.00 L200.00 50.00 Z');
+    expect(mirrored.lower).toBe('M0 50.00 L0.00 50.00 L100.00 70.00 L200.00 90.00 L200.00 50.00 Z');
+
+    const upperOnly = createWaveformPathData([1], 80, 40, 4, false);
+    expect(upperOnly.upper).toBe('M0 20.00 L40.00 4.00 L80.00 20.00 Z');
+    expect(upperOnly.lower).toBeNull();
+  });
+
+  test('rejects invalid path geometry without producing non-finite SVG data', () => {
+    expect(() => createWaveformPathData([Number.NaN], 100, 40, 4)).toThrow(RangeError);
+    expect(() => createWaveformPathData([0.5], 0, 40, 4)).toThrow(RangeError);
+    expect(() => createWaveformPathData([0.5], 100, 40, 20)).toThrow(RangeError);
   });
 
   test('rejects non-finite geometry and invalid counts', () => {

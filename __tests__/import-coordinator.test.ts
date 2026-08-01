@@ -1,163 +1,102 @@
-import * as ImagePicker from 'expo-image-picker';
+import type * as DocumentPicker from 'expo-document-picker';
 
-import { MAX_VIDEO_BYTES, WAVEFORM_POINT_COUNT } from '@/constants/app';
-import type { DanceProject, WaveformFile } from '@/domain/project';
+import { MAX_AUDIO_BYTES, MAX_VIDEO_BYTES, WAVEFORM_POINT_COUNT } from '@/constants/app';
+import { COPY } from '@/constants/copy';
+import type { DanceProject } from '@/domain/project';
 import { createEmptySegments } from '@/domain/segment';
-import type { CreateProjectInput } from '@/repositories/ProjectRepository';
+import type { FinalizeImportInput } from '@/repositories/ProjectRepository';
 import {
   IMPORT_KEEP_AWAKE_TAG,
+  AUDIO_DOCUMENT_PICKER_MIME_TYPES,
   ImportCoordinator,
   ImportCoordinatorError,
-  type ImportNativeAudioDependency,
-  type ImportProgressSnapshot,
+  type DocumentPickerDependency,
+  type ImportMediaDependency,
   type ImportProjectRepository,
   type KeepAwakeDependency,
-  type VideoPickerDependency,
+  type SelectedMedia,
+  suggestedProjectName,
 } from '@/services/ImportCoordinator';
-import type { NativeAudioSubscription } from '@/services/NativeAudioService';
-import { RecoveryService } from '@/services/RecoveryService';
-import { type StorageEntry, type StorageFileSystem, StorageLayout } from '@/services/StorageLayout';
-import type { ImportFileAccess } from '@/utils/file';
-import { AppError } from '@/utils/errors';
-import type { ImportProgressEvent } from '../modules/dance-audio';
+import type { PartialAudioValidator } from '@/services/PartialAudioValidator';
+import { DevelopmentLog } from '@/services/DevelopmentLog';
+import { StructuredDevelopmentDiagnostics } from '@/services/StructuredDevelopmentDiagnostics';
+import { TempoLoopMediaServiceError } from '@/services/TempoLoopMediaService';
+import { useImportStore } from '@/stores/useImportStore';
+import type {
+  ImportMediaOptions,
+  ImportMediaResult,
+  ImportProgressEvent,
+  InspectMediaOptions,
+  MediaInspection,
+  PickedMediaSource,
+  TempoLoopMediaSubscription,
+} from '../modules/tempoloop-media';
 
 const SELECTION_ID = '00000000-0000-4000-8000-000000000000';
-const TASK_ID = '11111111-1111-4111-8111-111111111111';
+const OPERATION_ID = '11111111-1111-4111-8111-111111111111';
 const PROJECT_ID = '22222222-2222-4222-8222-222222222222';
-const VIDEO_URI = 'file:///cache/ImagePicker/rehearsal.mov';
-const VIDEO_BYTES = 250 * 1024 * 1024;
+const CONTENT_URI = 'content://com.android.providers.media.documents/document/video%3A42';
+const PARTIAL_URI = `file:///documents/TempoLoop/imports/.import-${PROJECT_ID}/audio.m4a.partial`;
 const DURATION_MS = 90_000;
+const VIDEO_BYTES = 250 * 1024 * 1024;
 
-class MemoryStorageFileSystem implements StorageFileSystem {
-  readonly documentDirectoryUri = 'file:///documents';
-  readonly cacheDirectoryUri = 'file:///cache';
-  readonly directories = new Set<string>();
-  readonly files = new Map<string, { content: string; size: number }>();
-  readonly deletedDirectories: string[] = [];
+const INSPECTION: MediaInspection = {
+  sourceKind: 'video',
+  sourceSizeBytes: VIDEO_BYTES,
+  durationMs: DURATION_MS,
+  audioMimeType: 'audio/mp4a-latm',
+  sampleRate: 48_000,
+  channelCount: 2,
+};
 
-  constructor() {
-    this.ensureDirectory(this.documentDirectoryUri);
-    this.ensureDirectory(this.cacheDirectoryUri);
-  }
-
-  join(...parts: readonly string[]): string {
-    const [first = '', ...remaining] = parts;
-    return [
-      first.replace(/\/+$/, ''),
-      ...remaining.map((part) => part.replace(/^\/+|\/+$/g, '')),
-    ].join('/');
-  }
-
-  ensureDirectory(uri: string): void {
-    this.directories.add(uri.replace(/\/+$/, ''));
-  }
-
-  directoryExists(uri: string): boolean {
-    return this.directories.has(uri.replace(/\/+$/, ''));
-  }
-
-  fileExists(uri: string): boolean {
-    return this.files.has(uri);
-  }
-
-  fileSize(uri: string): number {
-    return this.files.get(uri)?.size ?? 0;
-  }
-
-  listDirectory(uri: string): readonly StorageEntry[] {
-    const prefix = `${uri.replace(/\/+$/, '')}/`;
-    const entries: StorageEntry[] = [];
-
-    for (const candidate of this.directories) {
-      const name = candidate.startsWith(prefix) ? candidate.slice(prefix.length) : '';
-      if (name.length > 0 && !name.includes('/')) {
-        entries.push({
-          uri: candidate,
-          name,
-          kind: 'directory',
-          size: null,
-          lastModifiedMs: null,
-        });
-      }
-    }
-
-    for (const [candidate, file] of this.files) {
-      const name = candidate.startsWith(prefix) ? candidate.slice(prefix.length) : '';
-      if (name.length > 0 && !name.includes('/')) {
-        entries.push({
-          uri: candidate,
-          name,
-          kind: 'file',
-          size: file.size,
-          lastModifiedMs: null,
-        });
-      }
-    }
-
-    return entries;
-  }
-
-  async readText(uri: string): Promise<string> {
-    const file = this.files.get(uri);
-    if (file === undefined) {
-      throw new Error(`Missing memory file: ${uri}`);
-    }
-    return file.content;
-  }
-
-  writeText(uri: string, content: string): void {
-    this.files.set(uri, { content, size: content.length });
-  }
-
-  async copyFile(sourceUri: string, destinationUri: string): Promise<void> {
-    const source = this.files.get(sourceUri);
-    if (source === undefined) {
-      throw new Error(`Missing memory file: ${sourceUri}`);
-    }
-    this.files.set(destinationUri, { ...source });
-  }
-
-  async moveFile(sourceUri: string, destinationUri: string): Promise<void> {
-    await this.copyFile(sourceUri, destinationUri);
-    this.files.delete(sourceUri);
-  }
-
-  deleteFile(uri: string): void {
-    this.files.delete(uri);
-  }
-
-  deleteDirectory(uri: string): void {
-    const normalized = uri.replace(/\/+$/, '');
-    const prefix = `${normalized}/`;
-    this.deletedDirectories.push(normalized);
-    this.directories.delete(normalized);
-
-    for (const candidate of [...this.directories]) {
-      if (candidate.startsWith(prefix)) {
-        this.directories.delete(candidate);
-      }
-    }
-    for (const candidate of [...this.files.keys()]) {
-      if (candidate.startsWith(prefix)) {
-        this.files.delete(candidate);
-      }
-    }
-  }
-
-  putFile(uri: string, content: string, size = content.length): void {
-    this.files.set(uri, { content, size });
-  }
+function mediaResult(overrides: Partial<ImportMediaResult> = {}): ImportMediaResult {
+  return {
+    audioUri: PARTIAL_URI,
+    audioSizeBytes: 2_000_000,
+    durationMs: DURATION_MS,
+    waveform: Array.from({ length: WAVEFORM_POINT_COUNT }, (_, index) => index / 2_048),
+    ...overrides,
+  };
 }
 
-interface Deferred<Value> {
-  readonly promise: Promise<Value>;
-  resolve(value: Value): void;
-  reject(reason: unknown): void;
+function project(input: FinalizeImportInput): DanceProject {
+  return {
+    schemaVersion: 1,
+    id: input.projectId,
+    name: input.name,
+    createdAtIso: '2026-07-31T12:00:00.000Z',
+    updatedAtIso: '2026-07-31T12:00:00.000Z',
+    audioFileName: 'audio.m4a',
+    waveformFileName: 'waveform.json',
+    durationMs: input.result.durationMs,
+    sourceDisplayName: input.sourceDisplayName,
+    sourceSizeBytes: input.inspection.sourceSizeBytes,
+    selectedRate: 1,
+    segments: createEmptySegments(),
+  };
 }
 
-function deferred<Value>(): Deferred<Value> {
+function pickerResult(
+  overrides: Partial<DocumentPicker.DocumentPickerAsset> = {},
+): DocumentPicker.DocumentPickerResult {
+  return {
+    canceled: false,
+    assets: [
+      {
+        uri: CONTENT_URI,
+        name: 'practice.mov',
+        size: VIDEO_BYTES,
+        mimeType: 'video/quicktime',
+        ...overrides,
+        lastModified: overrides.lastModified ?? 0,
+      },
+    ],
+  };
+}
+
+function deferred<Value>() {
   let resolve!: (value: Value) => void;
-  let reject!: (reason: unknown) => void;
+  let reject!: (error: unknown) => void;
   const promise = new Promise<Value>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise;
     reject = rejectPromise;
@@ -165,542 +104,534 @@ function deferred<Value>(): Deferred<Value> {
   return { promise, resolve, reject };
 }
 
-function makeProject(input: CreateProjectInput): DanceProject {
-  const timestamp = '2026-07-30T12:00:00.000Z';
-  return {
-    schemaVersion: 1,
-    id: input.id,
-    name: input.name,
-    createdAtIso: timestamp,
-    updatedAtIso: timestamp,
-    durationMs: input.durationMs,
-    sourceVideoBytes: input.sourceVideoBytes,
-    audioRelativePath: `Projects/${input.id}/audio.m4a`,
-    waveformRelativePath: `Projects/${input.id}/waveform.json`,
-    preferredRate: 1,
-    lastSelectedSegment: null,
-    segments: createEmptySegments(),
-  };
+interface HarnessOptions {
+  readonly pickerResult?: DocumentPicker.DocumentPickerResult;
+  readonly galleryResult?: PickedMediaSource | null;
+  readonly inspection?: MediaInspection;
+  readonly result?: ImportMediaResult | Promise<ImportMediaResult>;
+  readonly refresh?: () => Promise<void>;
 }
 
-function videoPickerResult(
-  overrides: Partial<ImagePicker.ImagePickerAsset> = {},
-): ImagePicker.ImagePickerResult {
-  return {
-    canceled: false,
-    assets: [
-      {
-        uri: VIDEO_URI,
-        type: 'video',
-        fileName: 'rehearsal.mov',
-        fileSize: VIDEO_BYTES,
-        width: 1920,
-        height: 1080,
-        ...overrides,
-      },
-    ],
+function createHarness(options: HarnessOptions = {}) {
+  const order: string[] = [];
+  const diagnosticLog = new DevelopmentLog({ enabled: true, capacity: 100 });
+  const diagnostics = new StructuredDevelopmentDiagnostics({ enabled: true, log: diagnosticLog });
+  const picker: DocumentPickerDependency = {
+    getDocumentAsync: jest.fn(async (pickerOptions) => {
+      order.push('audio-picker');
+      expect(pickerOptions).toEqual({
+        type: [...AUDIO_DOCUMENT_PICKER_MIME_TYPES],
+        multiple: false,
+        copyToCacheDirectory: false,
+      });
+      return options.pickerResult ?? pickerResult();
+    }),
   };
-}
-
-interface Harness {
-  coordinator: ImportCoordinator;
-  layout: StorageLayout;
-  fileSystem: MemoryStorageFileSystem;
-  picker: VideoPickerDependency;
-  launchPicker: jest.MockedFunction<VideoPickerDependency['launchImageLibraryAsync']>;
-  fileAccess: ImportFileAccess;
-  getFileSize: jest.MockedFunction<ImportFileAccess['getFileSize']>;
-  getAvailableDiskSpace: jest.MockedFunction<ImportFileAccess['getAvailableDiskSpace']>;
-  cleanupPickedFile: jest.MockedFunction<ImportFileAccess['deleteCacheFileIfOwned']>;
-  nativeAudio: ImportNativeAudioDependency;
-  extractAudio: jest.MockedFunction<ImportNativeAudioDependency['extractAudio']>;
-  generateWaveform: jest.MockedFunction<ImportNativeAudioDependency['generateWaveform']>;
-  cancelTask: jest.MockedFunction<ImportNativeAudioDependency['cancelTask']>;
-  emitNativeProgress(event: ImportProgressEvent): void;
-  removeSubscription: jest.Mock;
-  keepAwake: KeepAwakeDependency;
-  activateKeepAwake: jest.MockedFunction<KeepAwakeDependency['activate']>;
-  deactivateKeepAwake: jest.MockedFunction<KeepAwakeDependency['deactivate']>;
-  repository: ImportProjectRepository;
-  initializeRepository: jest.MockedFunction<ImportProjectRepository['initialize']>;
-  createProject: jest.MockedFunction<ImportProjectRepository['createFromImportedFiles']>;
-  committedWaveforms: WaveformFile[];
-}
-
-function createHarness(pickerResult: ImagePicker.ImagePickerResult = videoPickerResult()): Harness {
-  const fileSystem = new MemoryStorageFileSystem();
-  const layout = new StorageLayout(fileSystem);
-  if (!pickerResult.canceled) {
-    pickerResult.assets.forEach((asset) => {
-      fileSystem.putFile(
-        asset.uri,
-        '',
-        typeof asset.fileSize === 'number' ? asset.fileSize : VIDEO_BYTES,
-      );
-    });
-  }
-  const launchPicker = jest.fn<
-    ReturnType<VideoPickerDependency['launchImageLibraryAsync']>,
-    Parameters<VideoPickerDependency['launchImageLibraryAsync']>
-  >(async () => pickerResult);
-  const picker: VideoPickerDependency = {
-    requestMediaLibraryPermissionsAsync: jest.fn(async () => ({
-      granted: true,
-    })),
-    launchImageLibraryAsync: launchPicker,
-  };
-
-  const getFileSize = jest.fn<number, [uri: string]>(() => VIDEO_BYTES);
-  const getAvailableDiskSpace = jest.fn<number, []>(() => 2 * 1024 * 1024 * 1024);
-  const cleanupPickedFile = jest.fn<
-    ReturnType<ImportFileAccess['deleteCacheFileIfOwned']>,
-    Parameters<ImportFileAccess['deleteCacheFileIfOwned']>
-  >(() => 'deleted');
-  const fileAccess: ImportFileAccess = {
-    getFileSize,
-    getAvailableDiskSpace,
-    deleteCacheFileIfOwned: cleanupPickedFile,
-  };
-
   let progressListener: ((event: ImportProgressEvent) => void) | null = null;
-  const removeSubscription = jest.fn();
-  const extractAudio = jest.fn<
-    ReturnType<ImportNativeAudioDependency['extractAudio']>,
-    Parameters<ImportNativeAudioDependency['extractAudio']>
-  >(async (taskId, _inputUri, outputUri) => {
-    progressListener?.({
-      taskId,
-      phase: 'extracting',
-      progress: 0.4,
-    });
-    fileSystem.putFile(outputUri, '', 1024);
-    return { durationMs: DURATION_MS, outputBytes: 1024 };
-  });
-  const generateWaveform = jest.fn<
-    ReturnType<ImportNativeAudioDependency['generateWaveform']>,
-    Parameters<ImportNativeAudioDependency['generateWaveform']>
-  >(async (taskId) => {
-    progressListener?.({
-      taskId,
-      phase: 'waveform',
-      progress: 0.6,
-    });
-    return Array.from({ length: WAVEFORM_POINT_COUNT }, () => 0.25);
-  });
-  const cancelTask = jest.fn<
-    ReturnType<ImportNativeAudioDependency['cancelTask']>,
-    Parameters<ImportNativeAudioDependency['cancelTask']>
-  >(async () => undefined);
-  const nativeAudio: ImportNativeAudioDependency = {
-    extractAudio,
-    generateWaveform,
-    cancelTask,
-    addImportProgressListener(listener) {
+  const subscription: TempoLoopMediaSubscription = {
+    remove: jest.fn(() => order.push('unsubscribe')),
+  };
+  const media: ImportMediaDependency = {
+    pickGalleryVideo: jest.fn(async () => {
+      order.push('gallery-picker');
+      return options.galleryResult === undefined
+        ? {
+            uri: CONTENT_URI,
+            sizeBytes: VIDEO_BYTES,
+            mimeType: 'video/quicktime',
+            fileName: 'practice.mov',
+          }
+        : options.galleryResult;
+    }),
+    inspectMedia: jest.fn(async (inspectOptions: InspectMediaOptions) => {
+      order.push('inspect');
+      expect(inspectOptions).toEqual({
+        sourceUri: CONTENT_URI,
+        maxAudioSourceBytes: MAX_AUDIO_BYTES,
+        maxVideoSourceBytes: MAX_VIDEO_BYTES,
+      });
+      return options.inspection ?? INSPECTION;
+    }),
+    importProjectMedia: jest.fn(async (importOptions: ImportMediaOptions) => {
+      order.push('native-import');
+      expect(importOptions).toEqual({
+        operationId: OPERATION_ID,
+        sourceUri: CONTENT_URI,
+        outputAudioUri: PARTIAL_URI,
+        waveformBinCount: WAVEFORM_POINT_COUNT,
+        maxAudioSourceBytes: MAX_AUDIO_BYTES,
+        maxVideoSourceBytes: MAX_VIDEO_BYTES,
+      });
+      return await (options.result ?? mediaResult());
+    }),
+    cancelImport: jest.fn(async () => {
+      order.push('native-cancel');
+    }),
+    addImportProgressListener: jest.fn((listener) => {
+      order.push('subscribe');
       progressListener = listener;
-      const subscription: NativeAudioSubscription = {
-        remove: removeSubscription,
-      };
       return subscription;
-    },
+    }),
   };
-
-  const activateKeepAwake = jest.fn<Promise<void>, [tag: string]>(async () => undefined);
-  const deactivateKeepAwake = jest.fn<Promise<void>, [tag: string]>(async () => undefined);
-  const keepAwake: KeepAwakeDependency = {
-    activate: activateKeepAwake,
-    deactivate: deactivateKeepAwake,
-  };
-
-  const initializeRepository = jest.fn<Promise<void>, []>(async () => undefined);
-  const committedWaveforms: WaveformFile[] = [];
-  const createProject = jest.fn<Promise<DanceProject>, [input: CreateProjectInput]>(
-    async (input) => {
-      committedWaveforms.push(
-        JSON.parse(await fileSystem.readText(input.stagedWaveformUri)) as WaveformFile,
-      );
-      return makeProject(input);
-    },
-  );
+  const finalizedInputs: FinalizeImportInput[] = [];
   const repository: ImportProjectRepository = {
-    initialize: initializeRepository,
-    createFromImportedFiles: createProject,
+    initialize: jest.fn(async () => {
+      order.push('repository-init');
+    }),
+    createImportDirectory: jest.fn(() => {
+      order.push('create-import-directory');
+      return `file:///documents/TempoLoop/imports/.import-${PROJECT_ID}`;
+    }),
+    removeImportDirectory: jest.fn(() => {
+      order.push('remove-import-directory');
+    }),
+    finalizeImport: jest.fn(async (input) => {
+      order.push('finalize');
+      finalizedInputs.push(input);
+      return project(input);
+    }),
   };
-
-  const uuidValues = [SELECTION_ID, TASK_ID, PROJECT_ID];
+  const keepAwake: KeepAwakeDependency = {
+    activate: jest.fn(async (tag) => {
+      expect(tag).toBe(IMPORT_KEEP_AWAKE_TAG);
+      order.push('keep-awake-on');
+    }),
+    deactivate: jest.fn(async (tag) => {
+      expect(tag).toBe(IMPORT_KEEP_AWAKE_TAG);
+      order.push('keep-awake-off');
+    }),
+  };
+  const audioValidator: PartialAudioValidator = {
+    validateLoadable: jest.fn(async (uri) => {
+      expect(uri).toBe(PARTIAL_URI);
+      order.push('audio-load-check');
+    }),
+    clearSource: jest.fn(() => order.push('audio-clear')),
+  };
+  const refreshProjects = jest.fn(
+    options.refresh ?? (async () => order.push('refresh') as unknown as void),
+  );
+  const uuids = [SELECTION_ID, OPERATION_ID, PROJECT_ID];
   const coordinator = new ImportCoordinator({
     picker,
-    fileAccess,
-    keepAwake,
-    nativeAudio,
+    media,
     repository,
-    layout,
-    randomUuid: () => uuidValues.shift() ?? crypto.randomUUID(),
+    keepAwake,
+    audioValidator,
+    layout: { importPartialAudioUri: () => PARTIAL_URI },
+    importState: useImportStore.getState(),
+    refreshProjects,
+    randomUuid: () => uuids.shift() ?? '33333333-3333-4333-8333-333333333333',
+    diagnostics,
   });
 
   return {
     coordinator,
-    layout,
-    fileSystem,
     picker,
-    launchPicker,
-    fileAccess,
-    getFileSize,
-    getAvailableDiskSpace,
-    cleanupPickedFile,
-    nativeAudio,
-    extractAudio,
-    generateWaveform,
-    cancelTask,
-    emitNativeProgress(event) {
+    media,
+    repository,
+    keepAwake,
+    audioValidator,
+    refreshProjects,
+    finalizedInputs,
+    order,
+    diagnosticLog,
+    emitProgress(event: ImportProgressEvent) {
       progressListener?.(event);
     },
-    removeSubscription,
-    keepAwake,
-    activateKeepAwake,
-    deactivateKeepAwake,
-    repository,
-    initializeRepository,
-    createProject,
-    committedWaveforms,
   };
 }
 
-describe('ImportCoordinator video selection', () => {
-  test('prevents overlapping picker requests until the first selection finishes', async () => {
+async function select(harness: ReturnType<typeof createHarness>): Promise<SelectedMedia> {
+  const selection = await harness.coordinator.selectVideoFromGallery();
+  expect(selection).not.toBeNull();
+  return selection!;
+}
+
+beforeEach(() => {
+  useImportStore.getState().reset();
+});
+
+describe('ImportCoordinator selection', () => {
+  it('uses one opaque Android gallery selection and stores only small metadata', async () => {
     const harness = createHarness();
-    const pickerResult = deferred<ImagePicker.ImagePickerResult>();
-    harness.launchPicker.mockReturnValueOnce(pickerResult.promise);
 
-    const firstSelection = harness.coordinator.selectVideo();
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(harness.launchPicker).toHaveBeenCalledTimes(1);
+    await expect(harness.coordinator.selectVideoFromGallery()).resolves.toEqual({
+      selectionId: SELECTION_ID,
+      sourceKindHint: 'video',
+      uri: CONTENT_URI,
+      sizeBytes: VIDEO_BYTES,
+      mimeType: 'video/quicktime',
+      fileName: 'practice.mov',
+      suggestedName: 'practice',
+    });
 
-    await expect(harness.coordinator.selectVideo()).rejects.toMatchObject<
-      Partial<ImportCoordinatorError>
-    >({
+    expect(useImportStore.getState()).toMatchObject({
+      status: 'selected',
+      sourceUri: CONTENT_URI,
+      sourceMetadata: {
+        sourceKindHint: 'video',
+        displayName: 'practice.mov',
+        sizeBytes: VIDEO_BYTES,
+        mimeType: 'video/quicktime',
+      },
+    });
+  });
+
+  it('returns to idle when the native gallery picker is cancelled', async () => {
+    const harness = createHarness({ galleryResult: null });
+
+    await expect(harness.coordinator.selectVideoFromGallery()).resolves.toBeNull();
+    expect(useImportStore.getState()).toMatchObject({ status: 'idle', sourceUri: null });
+  });
+
+  it('selects audio with the no-copy document picker and applies the 200 MiB hint limit', async () => {
+    const harness = createHarness({
+      pickerResult: pickerResult({
+        name: 'practice.mp3',
+        mimeType: 'audio/mpeg',
+        size: MAX_AUDIO_BYTES,
+      }),
+    });
+
+    await expect(harness.coordinator.selectAudio()).resolves.toMatchObject({
+      sourceKindHint: 'audio',
+      fileName: 'practice.mp3',
+      mimeType: 'audio/mpeg',
+      sizeBytes: MAX_AUDIO_BYTES,
+    });
+    expect(harness.picker.getDocumentAsync).toHaveBeenCalledWith({
+      type: ['audio/*', 'application/octet-stream', 'video/iso.segment'],
+      multiple: false,
+      copyToCacheDirectory: false,
+    });
+  });
+
+  it('allows an opaque M4S document to continue to authoritative native inspection', async () => {
+    const harness = createHarness({
+      pickerResult: pickerResult({
+        name: 'renamed-track.m4s',
+        mimeType: 'application/octet-stream',
+        size: 17 * 1024 * 1024,
+      }),
+    });
+
+    await expect(harness.coordinator.selectAudio()).resolves.toMatchObject({
+      sourceKindHint: 'audio',
+      fileName: 'renamed-track.m4s',
+      mimeType: 'application/octet-stream',
+      suggestedName: 'renamed-track',
+    });
+  });
+
+  it('rejects audio metadata above 200 MiB before naming', async () => {
+    const harness = createHarness({
+      pickerResult: pickerResult({
+        name: 'oversized.mp3',
+        mimeType: 'audio/mpeg',
+        size: MAX_AUDIO_BYTES + 1,
+      }),
+    });
+
+    await expect(harness.coordinator.selectAudio()).rejects.toMatchObject({
+      code: 'E_AUDIO_TOO_LARGE',
+      details: { maxSizeBytes: MAX_AUDIO_BYTES },
+    });
+    expect(useImportStore.getState().status).toBe('failed');
+  });
+
+  it.each([undefined, 0])('treats audio picker size %p as unknown', async (size) => {
+    const harness = createHarness({ pickerResult: pickerResult({ size }) });
+    await expect(harness.coordinator.selectAudio()).resolves.toMatchObject({
+      sourceKindHint: 'audio',
+      sizeBytes: null,
+    });
+  });
+
+  it('rejects a second selection until the first is discarded', async () => {
+    const harness = createHarness();
+    const selection = await select(harness);
+    await expect(harness.coordinator.selectVideoFromGallery()).rejects.toMatchObject({
       code: 'E_IMPORT_IN_PROGRESS',
     });
-    expect(harness.launchPicker).toHaveBeenCalledTimes(1);
 
-    pickerResult.resolve(videoPickerResult());
-    await expect(firstSelection).resolves.toMatchObject({ selectionId: SELECTION_ID });
+    harness.coordinator.discardSelection(selection);
+    expect(useImportStore.getState().sourceUri).toBeNull();
   });
 
-  test('requests one unmodified video with iCloud download and falls back to File.size', async () => {
-    const harness = createHarness(
-      videoPickerResult({ fileName: 'Studio Run.MOV', fileSize: undefined }),
+  it('uses a safe fallback when picker display metadata is not a valid project name', () => {
+    expect(suggestedProjectName('unsafe/name.mov', CONTENT_URI)).toBe(
+      COPY.import.untitledProjectName,
     );
-
-    await expect(harness.coordinator.selectVideo()).resolves.toEqual({
-      selectionId: SELECTION_ID,
-      uri: harness.layout.pickedSourceUri(SELECTION_ID, 'mov'),
-      sourceExtension: 'mov',
-      sizeBytes: VIDEO_BYTES,
-      fileName: 'Studio Run.MOV',
-      suggestedName: 'Studio Run',
-    });
-
-    expect(harness.getFileSize).toHaveBeenCalledWith(VIDEO_URI);
-    expect(harness.fileSystem.fileExists(VIDEO_URI)).toBe(false);
-    expect(harness.fileSystem.fileExists(harness.layout.pickedSourceUri(SELECTION_ID, 'mov'))).toBe(
-      true,
-    );
-    expect(harness.launchPicker).toHaveBeenCalledWith({
-      mediaTypes: ['videos'],
-      allowsEditing: false,
-      allowsMultipleSelection: false,
-      selectionLimit: 1,
-      shouldDownloadFromNetwork: true,
-      preferredAssetRepresentationMode:
-        ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Current,
-    });
-  });
-
-  test('deletes the deterministic app-owned selection directory when naming is discarded', async () => {
-    const harness = createHarness();
-    const selection = await harness.coordinator.selectVideo();
-
-    expect(selection).not.toBeNull();
-    harness.coordinator.discardSelection(selection!);
-
-    expect(
-      harness.fileSystem.directoryExists(harness.layout.pickedSelectionDirectoryUri(SELECTION_ID)),
-    ).toBe(false);
-    expect(harness.cleanupPickedFile).not.toHaveBeenCalled();
-  });
-
-  test('rejects a picker URI outside Cache before attempting ownership transfer', async () => {
-    const outsideCacheUri = 'file:///documents/rehearsal.mov';
-    const harness = createHarness(videoPickerResult({ uri: outsideCacheUri }));
-
-    await expect(harness.coordinator.selectVideo()).rejects.toMatchObject<
-      Partial<ImportCoordinatorError>
-    >({
-      code: 'E_INVALID_LOCAL_URI',
-    });
-    expect(
-      harness.fileSystem.directoryExists(harness.layout.pickedSelectionDirectoryUri(SELECTION_ID)),
-    ).toBe(false);
-  });
-
-  test('cleans both ownership staging and the guarded picker source when move fails', async () => {
-    const harness = createHarness();
-    jest
-      .spyOn(harness.fileSystem, 'moveFile')
-      .mockRejectedValueOnce(new Error('simulated same-volume move failure'));
-
-    await expect(harness.coordinator.selectVideo()).rejects.toMatchObject<
-      Partial<ImportCoordinatorError>
-    >({
-      code: 'E_PICKER_RESULT_INVALID',
-    });
-    expect(harness.cleanupPickedFile).toHaveBeenCalledWith(VIDEO_URI);
-    expect(
-      harness.fileSystem.directoryExists(harness.layout.pickedSelectionDirectoryUri(SELECTION_ID)),
-    ).toBe(false);
-  });
-
-  test('keeps a validated cleanup marker when a failed move leaves a locked picker copy', async () => {
-    const harness = createHarness();
-    jest
-      .spyOn(harness.fileSystem, 'moveFile')
-      .mockRejectedValueOnce(new Error('simulated same-volume move failure'));
-    harness.cleanupPickedFile.mockImplementationOnce(() => {
-      throw new Error('simulated picker file lock');
-    });
-
-    await expect(harness.coordinator.selectVideo()).rejects.toMatchObject<
-      Partial<ImportCoordinatorError>
-    >({
-      code: 'E_PICKER_RESULT_INVALID',
-    });
-
-    const selectionDirectoryUri = harness.layout.pickedSelectionDirectoryUri(SELECTION_ID);
-    expect(harness.fileSystem.directoryExists(selectionDirectoryUri)).toBe(true);
-    await expect(
-      harness.fileSystem.readText(harness.layout.pickedSourceMarkerUri(SELECTION_ID)),
-    ).resolves.toBe(
-      JSON.stringify({
-        schemaVersion: 1,
-        pickerSourceUri: VIDEO_URI,
-      }),
-    );
-
-    const recovery = new RecoveryService(harness.layout);
-    await expect(recovery.recoverTransientCache()).resolves.toMatchObject({
-      removedPickedSelectionIds: [SELECTION_ID],
-    });
-    expect(harness.fileSystem.fileExists(VIDEO_URI)).toBe(false);
-    expect(harness.fileSystem.directoryExists(selectionDirectoryUri)).toBe(false);
-  });
-
-  test('rejects permission denial before opening the picker', async () => {
-    const harness = createHarness();
-    harness.picker.requestMediaLibraryPermissionsAsync = jest.fn(async () => ({
-      granted: false,
-    }));
-
-    await expect(harness.coordinator.selectVideo()).rejects.toMatchObject<
-      Partial<ImportCoordinatorError>
-    >({
-      code: 'E_PHOTO_PERMISSION_DENIED',
-    });
-    expect(harness.launchPicker).not.toHaveBeenCalled();
-  });
-
-  test('rejects a video over 600 MB and deletes only through guarded cache cleanup', async () => {
-    const oversizedBytes = MAX_VIDEO_BYTES + 1;
-    const harness = createHarness(videoPickerResult({ fileSize: oversizedBytes }));
-
-    await expect(harness.coordinator.selectVideo()).rejects.toMatchObject<
-      Partial<ImportCoordinatorError>
-    >({
-      code: 'E_VIDEO_TOO_LARGE',
-      details: {
-        sizeBytes: oversizedBytes,
-        maxSizeBytes: MAX_VIDEO_BYTES,
-      },
-    });
-    expect(harness.cleanupPickedFile).toHaveBeenCalledWith(VIDEO_URI);
-    expect(harness.extractAudio).not.toHaveBeenCalled();
-  });
-
-  test('rejects low storage before extraction and reports required bytes', async () => {
-    const harness = createHarness();
-    harness.getAvailableDiskSpace.mockReturnValue(1024);
-
-    await expect(harness.coordinator.selectVideo()).rejects.toMatchObject<
-      Partial<ImportCoordinatorError>
-    >({
-      code: 'E_INSUFFICIENT_STORAGE',
-      details: {
-        availableBytes: 1024,
-        requiredBytes: 1024 * 1024 * 1024,
-      },
-    });
-    expect(harness.cleanupPickedFile).toHaveBeenCalledWith(VIDEO_URI);
   });
 });
 
 describe('ImportCoordinator transaction', () => {
-  test('extracts, validates waveform JSON, commits once, and cleans temporary files', async () => {
+  it('runs inspect, native import, expo-audio validation, atomic finalize, and refresh in order', async () => {
     const harness = createHarness();
-    const selection = await harness.coordinator.selectVideo();
-    expect(selection).not.toBeNull();
-    const progress: ImportProgressSnapshot[] = [];
-
-    const project = await harness.coordinator.importProject({
-      selection: selection!,
-      name: '  Stage rehearsal  ',
-      onProgress: (snapshot) => progress.push(snapshot),
-    });
-
-    expect(project.id).toBe(PROJECT_ID);
-    expect(harness.extractAudio).toHaveBeenCalledWith(
-      TASK_ID,
-      harness.layout.pickedSourceUri(SELECTION_ID, 'mov'),
-      harness.layout.stagingAudioUri(TASK_ID),
-    );
-    expect(harness.generateWaveform).toHaveBeenCalledWith(
-      TASK_ID,
-      harness.layout.stagingAudioUri(TASK_ID),
-      WAVEFORM_POINT_COUNT,
-    );
-    expect(harness.createProject).toHaveBeenCalledWith({
-      id: PROJECT_ID,
-      name: 'Stage rehearsal',
-      durationMs: DURATION_MS,
-      sourceVideoBytes: VIDEO_BYTES,
-      stagedAudioUri: harness.layout.stagingAudioUri(TASK_ID),
-      stagedWaveformUri: harness.layout.stagingWaveformUri(TASK_ID),
-    });
-
-    expect(harness.committedWaveforms).toHaveLength(1);
-    expect(harness.committedWaveforms[0]).toMatchObject({
-      schemaVersion: 1,
-      pointCount: WAVEFORM_POINT_COUNT,
-      durationMs: DURATION_MS,
-    });
-    expect(harness.committedWaveforms[0]?.amplitudes).toHaveLength(WAVEFORM_POINT_COUNT);
-    expect(harness.fileSystem.files.has(harness.layout.stagingWaveformUri(TASK_ID))).toBe(false);
-    expect(progress.map(({ phase }) => phase)).toEqual(
-      expect.arrayContaining(['preparing', 'extracting', 'waveform', 'saving']),
-    );
-    expect(progress.at(-1)).toMatchObject({
-      taskId: TASK_ID,
-      phase: 'saving',
-      progress: 1,
-    });
-    expect(harness.activateKeepAwake).toHaveBeenCalledWith(IMPORT_KEEP_AWAKE_TAG);
-    expect(harness.deactivateKeepAwake).toHaveBeenCalledWith(IMPORT_KEEP_AWAKE_TAG);
-    expect(harness.removeSubscription).toHaveBeenCalledTimes(1);
-    expect(harness.cleanupPickedFile).not.toHaveBeenCalled();
-    expect(
-      harness.fileSystem.directoryExists(harness.layout.pickedSelectionDirectoryUri(SELECTION_ID)),
-    ).toBe(false);
-    expect(harness.fileSystem.deletedDirectories).toContain(
-      harness.layout.stagingTaskDirectoryUri(TASK_ID),
-    );
-    expect(harness.coordinator.isImportActive()).toBe(false);
-  });
-
-  test('does not commit malformed waveform data and cleans the transaction', async () => {
-    const harness = createHarness();
-    harness.generateWaveform.mockResolvedValueOnce(
-      Array.from({ length: WAVEFORM_POINT_COUNT - 1 }, () => 0.5),
-    );
-    const selection = await harness.coordinator.selectVideo();
+    const selection = await select(harness);
 
     await expect(
-      harness.coordinator.importProject({
-        selection: selection!,
-        name: 'Practice',
-      }),
-    ).rejects.toMatchObject<Partial<ImportCoordinatorError>>({
-      code: 'E_WAVEFORM_INVALID',
-    });
+      harness.coordinator.importProject({ selection, name: '  Practice Track  ' }),
+    ).resolves.toMatchObject({ id: PROJECT_ID, name: 'Practice Track' });
 
-    expect(harness.createProject).not.toHaveBeenCalled();
-    expect(harness.deactivateKeepAwake).toHaveBeenCalledTimes(1);
-    expect(
-      harness.fileSystem.directoryExists(harness.layout.pickedSelectionDirectoryUri(SELECTION_ID)),
-    ).toBe(false);
-    expect(harness.coordinator.isImportActive()).toBe(false);
+    expect(harness.order).toEqual([
+      'gallery-picker',
+      'repository-init',
+      'create-import-directory',
+      'subscribe',
+      'keep-awake-on',
+      'inspect',
+      'native-import',
+      'audio-load-check',
+      'finalize',
+      'refresh',
+      'unsubscribe',
+      'audio-clear',
+      'keep-awake-off',
+    ]);
+    expect(harness.finalizedInputs).toEqual([
+      {
+        projectId: PROJECT_ID,
+        name: 'Practice Track',
+        sourceDisplayName: 'practice.mov',
+        inspection: INSPECTION,
+        result: mediaResult(),
+      },
+    ]);
+    expect(useImportStore.getState()).toMatchObject({
+      status: 'completed',
+      operationId: OPERATION_ID,
+      projectId: PROJECT_ID,
+      sourceUri: null,
+      sourceMetadata: null,
+    });
+    expect(harness.diagnosticLog.getEntries().map((entry) => entry.event)).toEqual([
+      'import.started',
+      'import.stage',
+      'import.source.inspected',
+      'import.export.completed',
+      'import.waveform.completed',
+      'import.completed',
+    ]);
+    const diagnosticJson = JSON.stringify(harness.diagnosticLog.getEntries());
+    expect(diagnosticJson).toContain(OPERATION_ID);
+    expect(diagnosticJson).not.toContain('Practice Track');
+    expect(diagnosticJson).not.toContain(CONTENT_URI);
+    expect(diagnosticJson).not.toContain('practice.mov');
+    expect(diagnosticJson).not.toContain('"waveform":[');
+    expect(diagnosticJson).not.toContain('"samples"');
   });
 
-  test('propagates cancellation, ignores late progress, and never commits', async () => {
+  it('runs an MP3 selection through the same M4A and waveform transaction', async () => {
+    const audioInspection: MediaInspection = {
+      ...INSPECTION,
+      sourceKind: 'audio',
+      sourceSizeBytes: 12 * 1024 * 1024,
+      audioMimeType: 'audio/mpeg',
+    };
+    const harness = createHarness({
+      pickerResult: pickerResult({
+        name: 'dance-track.mp3',
+        mimeType: 'audio/mpeg',
+        size: audioInspection.sourceSizeBytes ?? undefined,
+      }),
+      inspection: audioInspection,
+    });
+    const selection = await harness.coordinator.selectAudio();
+    expect(selection).not.toBeNull();
+
+    await expect(
+      harness.coordinator.importProject({ selection: selection!, name: 'Dance Track' }),
+    ).resolves.toMatchObject({ name: 'Dance Track', audioFileName: 'audio.m4a' });
+    expect(harness.finalizedInputs[0]).toMatchObject({
+      sourceDisplayName: 'dance-track.mp3',
+      inspection: audioInspection,
+    });
+  });
+
+  it('imports MP3 content renamed with an M4S extension through the audio transaction', async () => {
+    const audioInspection: MediaInspection = {
+      ...INSPECTION,
+      sourceKind: 'audio',
+      sourceSizeBytes: 17 * 1024 * 1024,
+      audioMimeType: 'audio/mpeg',
+    };
+    const harness = createHarness({
+      pickerResult: pickerResult({
+        name: 'dance-track.m4s',
+        mimeType: 'video/iso.segment',
+        size: audioInspection.sourceSizeBytes ?? undefined,
+      }),
+      inspection: audioInspection,
+    });
+    const selection = await harness.coordinator.selectAudio();
+    expect(selection).not.toBeNull();
+
+    await expect(
+      harness.coordinator.importProject({ selection: selection!, name: 'M4S Track' }),
+    ).resolves.toMatchObject({ name: 'M4S Track', audioFileName: 'audio.m4a' });
+    expect(harness.finalizedInputs[0]).toMatchObject({
+      sourceDisplayName: 'dance-track.m4s',
+      inspection: audioInspection,
+    });
+  });
+
+  it('does not inspect native media until a valid name is submitted', async () => {
     const harness = createHarness();
-    const extractionStarted = deferred<void>();
-    const extractionResult = deferred<{
-      durationMs: number;
-      outputBytes: number;
-    }>();
-    harness.extractAudio.mockImplementationOnce(async () => {
-      extractionStarted.resolve(undefined);
-      return extractionResult.promise;
+    const selection = await select(harness);
+
+    await expect(
+      harness.coordinator.importProject({ selection, name: ' / ' }),
+    ).rejects.toBeDefined();
+    expect(harness.media.inspectMedia).not.toHaveBeenCalled();
+    expect(harness.repository.createImportDirectory).not.toHaveBeenCalled();
+  });
+
+  it('rejects malformed native waveform results and removes only the app import directory', async () => {
+    const harness = createHarness({ result: mediaResult({ waveform: [0, 1] }) });
+    const selection = await select(harness);
+
+    await expect(
+      harness.coordinator.importProject({ selection, name: 'Practice' }),
+    ).rejects.toMatchObject({ code: 'E_WAVEFORM_FAILED' });
+
+    expect(harness.media.cancelImport).toHaveBeenCalledWith(OPERATION_ID);
+    expect(harness.audioValidator.validateLoadable).not.toHaveBeenCalled();
+    expect(harness.repository.finalizeImport).not.toHaveBeenCalled();
+    expect(harness.repository.removeImportDirectory).toHaveBeenCalledWith(PROJECT_ID);
+    expect(useImportStore.getState()).toMatchObject({ status: 'failed', sourceUri: null });
+    expect(harness.diagnosticLog.getEntries()).toContainEqual(
+      expect.objectContaining({
+        event: 'import.failed',
+        context: expect.objectContaining({ operationId: OPERATION_ID, code: 'E_WAVEFORM_FAILED' }),
+      }),
+    );
+  });
+
+  it('rejects a native destination different from the private partial URI', async () => {
+    const harness = createHarness({
+      result: mediaResult({ audioUri: 'file:///documents/not-the-import/audio.m4a.partial' }),
     });
-    const selection = await harness.coordinator.selectVideo();
-    const progress: ImportProgressSnapshot[] = [];
+    const selection = await select(harness);
+
+    await expect(
+      harness.coordinator.importProject({ selection, name: 'Practice' }),
+    ).rejects.toMatchObject<Partial<ImportCoordinatorError>>({ code: 'E_NATIVE_RESULT_INVALID' });
+    expect(harness.repository.removeImportDirectory).toHaveBeenCalledWith(PROJECT_ID);
+  });
+
+  it('keeps a committed project if the post-commit refresh fails', async () => {
+    const harness = createHarness({
+      refresh: async () => {
+        throw new Error('refresh failed');
+      },
+    });
+    const selection = await select(harness);
+
+    await expect(
+      harness.coordinator.importProject({ selection, name: 'Practice' }),
+    ).rejects.toMatchObject({ code: 'E_POST_COMMIT_REFRESH_FAILED' });
+    expect(harness.repository.finalizeImport).toHaveBeenCalledTimes(1);
+    expect(harness.repository.removeImportDirectory).not.toHaveBeenCalled();
+  });
+
+  it('forwards matching native progress and ignores stale operations', async () => {
+    const pending = deferred<ImportMediaResult>();
+    const harness = createHarness({ result: pending.promise });
+    const selection = await select(harness);
+    const onProgress = jest.fn();
     const importPromise = harness.coordinator.importProject({
-      selection: selection!,
+      selection,
       name: 'Practice',
-      onProgress: (snapshot) => progress.push(snapshot),
+      onProgress,
     });
+    await Promise.resolve();
+    await Promise.resolve();
 
-    await extractionStarted.promise;
-    await expect(harness.coordinator.cancelActiveImport()).resolves.toBe(true);
-    extractionResult.reject(new AppError('E_CANCELLED', 'Native extraction cancelled.'));
+    harness.emitProgress({
+      operationId: 'stale',
+      stage: 'exporting',
+      stageProgress: 0.9,
+      overallProgress: 0.9,
+    });
+    harness.emitProgress({
+      operationId: OPERATION_ID,
+      stage: 'exporting',
+      stageProgress: 0.4,
+      overallProgress: 0.3,
+    });
+    harness.emitProgress({
+      operationId: OPERATION_ID,
+      stage: 'exporting',
+      stageProgress: 0.5,
+      overallProgress: 0.4,
+    });
+    pending.resolve(mediaResult());
+    await importPromise;
 
-    await expect(importPromise).rejects.toMatchObject<Partial<AppError>>({
-      code: 'E_CANCELLED',
+    expect(onProgress).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operationId: OPERATION_ID,
+        phase: 'extracting',
+        stage: 'exporting',
+        progress: 0.3,
+      }),
+    );
+    expect(onProgress).not.toHaveBeenCalledWith(expect.objectContaining({ operationId: 'stale' }));
+    expect(
+      harness.diagnosticLog
+        .getEntries()
+        .filter(
+          (entry) =>
+            entry.event === 'import.stage' &&
+            entry.context !== null &&
+            typeof entry.context === 'object' &&
+            'stage' in entry.context &&
+            entry.context.stage === 'exporting',
+        ),
+    ).toHaveLength(1);
+  });
+
+  it('cancels idempotently, suppresses alerts, unsubscribes, cleans only its import, and releases KeepAwake', async () => {
+    const pending = deferred<ImportMediaResult>();
+    const harness = createHarness({ result: pending.promise });
+    const selection = await select(harness);
+    const importPromise = harness.coordinator.importProject({ selection, name: 'Practice' });
+    const cancellationExpectation = expect(importPromise).rejects.toMatchObject({
+      code: 'E_IMPORT_CANCELLED',
       shouldAlert: false,
     });
-    expect(harness.cancelTask).toHaveBeenCalledWith(TASK_ID);
-    expect(harness.createProject).not.toHaveBeenCalled();
-    expect(
-      harness.fileSystem.directoryExists(harness.layout.pickedSelectionDirectoryUri(SELECTION_ID)),
-    ).toBe(false);
+    for (
+      let index = 0;
+      index < 10 && !jest.mocked(harness.media.importProjectMedia).mock.calls.length;
+      index += 1
+    ) {
+      await Promise.resolve();
+    }
+    expect(harness.media.importProjectMedia).toHaveBeenCalledTimes(1);
 
-    const progressCountAfterFinish = progress.length;
-    harness.emitNativeProgress({
-      taskId: TASK_ID,
-      phase: 'extracting',
-      progress: 0.9,
-    });
-    expect(progress).toHaveLength(progressCountAfterFinish);
-    expect(harness.coordinator.isImportActive()).toBe(false);
-  });
+    await expect(harness.coordinator.cancelActiveImport()).resolves.toBe(true);
+    await expect(harness.coordinator.cancelActiveImport()).resolves.toBe(true);
+    pending.reject(new TempoLoopMediaServiceError('E_IMPORT_CANCELLED', 'cancelled'));
 
-  test('prevents a second import while native work is active', async () => {
-    const harness = createHarness();
-    const extractionStarted = deferred<void>();
-    const extractionResult = deferred<{
-      durationMs: number;
-      outputBytes: number;
-    }>();
-    harness.extractAudio.mockImplementationOnce(async () => {
-      extractionStarted.resolve(undefined);
-      return extractionResult.promise;
+    await cancellationExpectation;
+    expect(harness.media.cancelImport).toHaveBeenCalledTimes(1);
+    expect(harness.repository.removeImportDirectory).toHaveBeenCalledWith(PROJECT_ID);
+    expect(harness.keepAwake.deactivate).toHaveBeenCalledWith(IMPORT_KEEP_AWAKE_TAG);
+    expect(useImportStore.getState()).toMatchObject({
+      status: 'failed',
+      sourceUri: null,
+      terminalError: { code: 'E_IMPORT_CANCELLED', userMessage: null },
     });
-    const selection = await harness.coordinator.selectVideo();
-    const firstImport = harness.coordinator.importProject({
-      selection: selection!,
-      name: 'First',
-    });
-    await extractionStarted.promise;
-
-    await expect(
-      harness.coordinator.importProject({
-        selection: selection!,
-        name: 'Second',
+    expect(harness.diagnosticLog.getEntries()).toContainEqual(
+      expect.objectContaining({
+        event: 'import.canceled',
+        context: expect.objectContaining({
+          operationId: OPERATION_ID,
+          code: 'E_IMPORT_CANCELLED',
+        }),
       }),
-    ).rejects.toMatchObject<Partial<ImportCoordinatorError>>({
-      code: 'E_IMPORT_IN_PROGRESS',
-    });
-
-    await harness.coordinator.cancelActiveImport();
-    extractionResult.reject(new AppError('E_CANCELLED', 'Native extraction cancelled.'));
-    await expect(firstImport).rejects.toMatchObject({ code: 'E_CANCELLED' });
+    );
   });
 });

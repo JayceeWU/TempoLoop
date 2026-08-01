@@ -6,6 +6,10 @@ jest.mock('@/services/DiagnosticsService', () => ({
   DEVELOPMENT_DIAGNOSTICS_ENABLED: false,
 }));
 
+jest.mock('@/playback/AudioPlayerProvider', () => ({
+  usePlaybackSnapshot: jest.fn(),
+}));
+
 jest.mock('@/components/DiagnosticsScreen', () => {
   const ReactModule = jest.requireActual<typeof import('react')>('react');
   const ReactNative = jest.requireActual<typeof import('react-native')>('react-native');

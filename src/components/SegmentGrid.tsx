@@ -1,15 +1,15 @@
 import { StyleSheet, View } from 'react-native';
 
 import { spacing } from '@/constants/theme';
-import type { DanceSegments, SegmentNumber } from '@/domain/segment';
+import type { DanceSegments, SegmentIndex } from '@/domain/segment';
 import { SegmentButton } from '@/components/SegmentButton';
 
 export interface SegmentGridProps {
   readonly segments: DanceSegments;
   readonly durationMs: number;
-  readonly selectedSegment: SegmentNumber | null;
+  readonly selectedSegment: SegmentIndex | null;
   readonly interactionDisabled?: boolean;
-  readonly onSelectSegment: (segmentNumber: SegmentNumber) => void;
+  readonly onSelectSegment: (segmentIndex: SegmentIndex) => void;
 }
 
 export function SegmentGrid({
@@ -27,10 +27,10 @@ export function SegmentGrid({
             <SegmentButton
               durationMs={durationMs}
               interactionDisabled={interactionDisabled}
-              key={segment.number}
-              onPress={() => onSelectSegment(segment.number)}
+              key={segment.id}
+              onPress={() => onSelectSegment(segment.index)}
               segment={segment}
-              selected={selectedSegment === segment.number}
+              selected={selectedSegment === segment.index}
             />
           ))}
         </View>

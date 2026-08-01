@@ -1,5 +1,5 @@
 import type { PlaybackRate } from '@/domain/playback';
-import type { DanceSegments, SegmentNumber } from '@/domain/segment';
+import type { DanceSegments } from '@/domain/segment';
 
 export interface DanceProject {
   schemaVersion: 1;
@@ -7,23 +7,21 @@ export interface DanceProject {
   name: string;
   createdAtIso: string;
   updatedAtIso: string;
+  audioFileName: 'audio.m4a';
+  waveformFileName: 'waveform.json';
   durationMs: number;
-  sourceVideoBytes: number;
-  audioRelativePath: string;
-  waveformRelativePath: string;
-  preferredRate: PlaybackRate;
-  lastSelectedSegment: SegmentNumber | null;
+  sourceDisplayName: string | null;
+  sourceSizeBytes: number | null;
+  selectedRate: PlaybackRate;
   segments: DanceSegments;
 }
 
-export interface ProjectIndexFile {
+export interface StoredWaveform {
   schemaVersion: 1;
-  projects: DanceProject[];
+  durationMs: number;
+  sampleCount: 2048;
+  samples: number[];
 }
 
-export interface WaveformFile {
-  schemaVersion: 1;
-  pointCount: 2048;
-  durationMs: number;
-  amplitudes: number[];
-}
+/** Temporary naming compatibility while callers migrate to StoredWaveform. */
+export type WaveformFile = StoredWaveform;

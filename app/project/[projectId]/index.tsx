@@ -22,15 +22,13 @@ import { calculatePlaybackRange, type PlaybackRate, type PlaybackRange } from '@
 import {
   canTogglePracticePlayback,
   getConfiguredPracticeSegment,
-  getPracticePlaybackIntent,
-  isPracticeAudioReady,
   selectInitialPracticeSegment,
 } from '@/domain/practice';
-import type { SegmentNumber } from '@/domain/segment';
+import type { DanceProject } from '@/domain/project';
+import type { SegmentIndex } from '@/domain/segment';
+import { type TempoLoopPlayerController, useTempoLoopPlayer } from '@/playback/useTempoLoopPlayer';
 import { projectRepository } from '@/repositories/ProjectRepository';
-import { usePlaybackStore } from '@/stores/usePlaybackStore';
 import { useProjectStore } from '@/stores/useProjectStore';
-import { AppError } from '@/utils/errors';
 import { canAcceptPlaybackToggle } from '@/utils/interaction';
 import { formatSegmentTime } from '@/utils/time';
 
@@ -44,29 +42,42 @@ function projectIdFromParam(value: string | string[] | undefined): string | null
 }
 
 function playbackErrorMessage(error: unknown): string {
-  return error instanceof AppError && error.userMessage !== null
-    ? error.userMessage
+  return error instanceof Error && error.message === 'E_AUDIO_NOT_FOUND'
+    ? COPY.mediaErrors.E_AUDIO_NOT_FOUND
     : COPY.practice.playbackErrorMessage;
 }
 
+function deactivateBestEffort(player: TempoLoopPlayerController): void {
+  try {
+    player.deactivate();
+  } catch {
+    // The app-level provider may already be disposing during route teardown.
+  }
+}
+
 export default function PracticeProjectScreen() {
-  const params = useLocalSearchParams<{
-    projectId?: string | string[];
-  }>();
+  const params = useLocalSearchParams<{ projectId?: string | string[] }>();
   const projectId = projectIdFromParam(params.projectId);
   const projects = useProjectStore((state) => state.projects);
   const isInitialized = useProjectStore((state) => state.isInitialized);
   const isLoadingProjects = useProjectStore((state) => state.isLoading);
   const initializeProjects = useProjectStore((state) => state.initialize);
-  const updatePreferences = useProjectStore((state) => state.updatePreferences);
+  const updateSelectedRate = useProjectStore((state) => state.updateSelectedRate);
   const pendingProjectId = useProjectStore((state) => state.pendingProjectId);
   const projectStoreError = useProjectStore((state) => state.error);
-  const snapshot = usePlaybackStore((state) => state.snapshot);
-  const selectedProjectId = usePlaybackStore((state) => state.selectedProjectId);
-  const selectedSegment = usePlaybackStore((state) => state.selectedSegment);
-  const selectedRate = usePlaybackStore((state) => state.selectedRate);
-  const command = usePlaybackStore((state) => state.command);
+  const player = useTempoLoopPlayer();
+  const playerRef = useRef(player);
+  const projectRef = useRef<DanceProject | null>(null);
+  const focusTokenRef = useRef(0);
+  const prepareCommandRef = useRef(0);
+  const lastPlaybackToggleAtRef = useRef<number | null>(null);
+  const initializationRequestedRef = useRef(false);
+  const [selectedSegment, setSelectedSegment] = useState<SegmentIndex | null>(null);
+  const [isEntering, setIsEntering] = useState(false);
+  const [isPreparingSegment, setIsPreparingSegment] = useState(false);
+  const [isToggling, setIsToggling] = useState(false);
   const [isOpeningEditor, setIsOpeningEditor] = useState(false);
+  const [audioLoadFailed, setAudioLoadFailed] = useState(false);
 
   const project = useMemo(
     () =>
@@ -79,7 +90,6 @@ export default function PracticeProjectScreen() {
     if (project === null) {
       return null;
     }
-
     try {
       return projectRepository.resolveAudioUri(project);
     } catch {
@@ -87,30 +97,23 @@ export default function PracticeProjectScreen() {
     }
   }, [project]);
   const focusLoadKey =
-    project !== null && audioUri !== null ? `${project.id}\u0000${audioUri}` : null;
+    project === null || audioUri === null ? null : `${project.id}\u0000${audioUri}`;
 
-  const projectRef = useRef(project);
-  const audioUriRef = useRef(audioUri);
-  const initializationRequestedRef = useRef(false);
-  const focusTokenRef = useRef(0);
-  const isFocusedRef = useRef(false);
-  const isUnmountingRef = useRef(false);
-  const isOpeningEditorRef = useRef(false);
-  const lastPlaybackToggleAtRef = useRef<number | null>(null);
+  useEffect(() => {
+    playerRef.current = player;
+  }, [player]);
 
   useEffect(() => {
     projectRef.current = project;
-    audioUriRef.current = audioUri;
-  }, [audioUri, project]);
+  }, [project]);
 
   const requestProjectInitialization = useCallback(() => {
     if (initializationRequestedRef.current) {
       return;
     }
-
     initializationRequestedRef.current = true;
     void initializeProjects().catch(() => {
-      // The store exposes the failure and the screen offers an explicit retry.
+      // The store exposes this failure and the screen renders an explicit retry.
     });
   }, [initializeProjects]);
 
@@ -120,17 +123,10 @@ export default function PracticeProjectScreen() {
     }
   }, [isInitialized, isLoadingProjects, projectStoreError, requestProjectInitialization]);
 
-  const tokenIsCurrent = useCallback(
-    (token: number) => isFocusedRef.current && focusTokenRef.current === token,
-    [],
-  );
+  const tokenIsCurrent = useCallback((token: number) => focusTokenRef.current === token, []);
 
   const showPlaybackError = useCallback(
     (error: unknown, token: number) => {
-      if (error instanceof AppError && error.isCancellation) {
-        return;
-      }
-
       if (tokenIsCurrent(token)) {
         Alert.alert(COPY.practice.playbackErrorTitle, playbackErrorMessage(error));
       }
@@ -138,103 +134,80 @@ export default function PracticeProjectScreen() {
     [tokenIsCurrent],
   );
 
-  const prepareFocusedProject = useCallback(
+  const enterFocusedProject = useCallback(
     async (token: number): Promise<void> => {
       const currentProject = projectRef.current;
-      const currentAudioUri = audioUriRef.current;
-      if (currentProject === null || currentAudioUri === null || !tokenIsCurrent(token)) {
+      if (currentProject === null) {
         return;
       }
 
+      const currentAudioUri = projectRepository.resolveAudioUri(currentProject);
       const initialSegment = selectInitialPracticeSegment(currentProject);
-      let playback = usePlaybackStore.getState();
-      const canReuseLoadedAudio =
-        playback.selectedProjectId === currentProject.id &&
-        isPracticeAudioReady(playback.snapshot.state) &&
-        playback.snapshot.durationMs === currentProject.durationMs;
+      setSelectedSegment(initialSegment);
+      setAudioLoadFailed(false);
+      setIsEntering(true);
 
-      playback.setSelection({
-        projectId: currentProject.id,
-        segmentNumber: initialSegment,
-        rate: currentProject.preferredRate,
+      const entered = await playerRef.current.enterPractice(
+        {
+          projectId: currentProject.id,
+          audioUri: currentAudioUri,
+          durationMs: currentProject.durationMs,
+        },
+        currentProject.selectedRate,
+      );
+      if (!entered || !tokenIsCurrent(token)) {
+        if (tokenIsCurrent(token)) {
+          setAudioLoadFailed(true);
+        }
+        return;
+      }
+
+      const segment = getConfiguredPracticeSegment(currentProject, initialSegment);
+      if (segment === null) {
+        return;
+      }
+      const range = calculatePlaybackRange(segment);
+      const prepared = await playerRef.current.preparePracticeSegment({
+        segmentIndex: segment.index,
+        clipStartMs: range.playFromMs,
+        clipEndMs: range.stopAtMs,
+        rate: currentProject.selectedRate,
       });
-
-      if (!canReuseLoadedAudio) {
-        await usePlaybackStore.getState().loadAudio(currentAudioUri);
-        if (!tokenIsCurrent(token)) {
-          return;
-        }
-      }
-
-      playback = usePlaybackStore.getState();
-      if (playback.snapshot.rate !== currentProject.preferredRate) {
-        await playback.setRate(currentProject.preferredRate);
-        if (!tokenIsCurrent(token)) {
-          return;
-        }
-      }
-
-      const configuredSegment = getConfiguredPracticeSegment(currentProject, initialSegment);
-      if (configuredSegment !== null) {
-        const range = calculatePlaybackRange(configuredSegment);
-        await usePlaybackStore.getState().stopAndSeek(range.playFromMs);
+      if (!prepared && tokenIsCurrent(token)) {
+        setAudioLoadFailed(true);
       }
     },
     [tokenIsCurrent],
   );
 
-  useEffect(() => {
-    isUnmountingRef.current = false;
-
-    return () => {
-      isUnmountingRef.current = true;
-      focusTokenRef.current += 1;
-      isFocusedRef.current = false;
-
-      const playback = usePlaybackStore.getState();
-      if (projectId !== null && playback.selectedProjectId === projectId) {
-        void playback.unload().catch(() => {
-          // The route is already gone; a later load replaces native state.
-        });
-      }
-    };
-  }, [projectId]);
-
   useFocusEffect(
     useCallback(() => {
       const token = focusTokenRef.current + 1;
       focusTokenRef.current = token;
-      isFocusedRef.current = true;
-      isOpeningEditorRef.current = false;
+      prepareCommandRef.current += 1;
       setIsOpeningEditor(false);
+      setIsPreparingSegment(false);
+      setIsToggling(false);
 
-      if (focusLoadKey !== null && projectRef.current !== null) {
-        void prepareFocusedProject(token).catch((error: unknown) => {
-          showPlaybackError(error, token);
-        });
+      if (focusLoadKey !== null) {
+        void enterFocusedProject(token)
+          .catch((error: unknown) => {
+            setAudioLoadFailed(true);
+            showPlaybackError(error, token);
+          })
+          .finally(() => {
+            if (tokenIsCurrent(token)) {
+              setIsEntering(false);
+            }
+          });
       }
 
       return () => {
-        isFocusedRef.current = false;
         focusTokenRef.current += 1;
-
-        if (isUnmountingRef.current || isOpeningEditorRef.current) {
-          return;
-        }
-
-        const playback = usePlaybackStore.getState();
-        if (
-          projectId !== null &&
-          playback.selectedProjectId === projectId &&
-          playback.snapshot.state !== 'idle' &&
-          playback.snapshot.state !== 'failed'
-        ) {
-          void playback.pause().catch(() => {
-            // Blur cleanup is best effort and never auto-resumes.
-          });
-        }
+        prepareCommandRef.current += 1;
+        deactivateBestEffort(playerRef.current);
       };
-    }, [focusLoadKey, prepareFocusedProject, projectId, showPlaybackError]),
+    }, [enterFocusedProject, focusLoadKey, showPlaybackError, tokenIsCurrent]),
   );
 
   const handleRetryProjectLoad = useCallback(() => {
@@ -243,222 +216,138 @@ export default function PracticeProjectScreen() {
   }, [requestProjectInitialization]);
 
   const handleRetryAudio = useCallback(() => {
-    if (command.status === 'pending') {
+    if (isEntering) {
       return;
     }
-
-    const token = focusTokenRef.current;
-    void prepareFocusedProject(token).catch((error: unknown) => {
-      showPlaybackError(error, token);
-    });
-  }, [command.status, prepareFocusedProject, showPlaybackError]);
-
-  const persistPreferencePair = useCallback(
-    async (
-      rate: PlaybackRate,
-      segmentNumber: SegmentNumber | null,
-      token: number,
-    ): Promise<void> => {
-      const currentProject = projectRef.current;
-      if (currentProject === null) {
-        return;
-      }
-
-      try {
-        await updatePreferences(currentProject.id, rate, segmentNumber);
-      } catch {
+    const token = focusTokenRef.current + 1;
+    focusTokenRef.current = token;
+    void enterFocusedProject(token)
+      .catch((error: unknown) => {
+        setAudioLoadFailed(true);
+        showPlaybackError(error, token);
+      })
+      .finally(() => {
         if (tokenIsCurrent(token)) {
-          Alert.alert(COPY.practice.preferenceErrorTitle, COPY.practice.preferenceErrorMessage);
+          setIsEntering(false);
         }
-      }
-    },
-    [tokenIsCurrent, updatePreferences],
-  );
+      });
+  }, [enterFocusedProject, isEntering, showPlaybackError, tokenIsCurrent]);
 
   const handleSelectSegment = useCallback(
-    (segmentNumber: SegmentNumber) => {
+    (segmentIndex: SegmentIndex) => {
       const currentProject = projectRef.current;
-      const playback = usePlaybackStore.getState();
-      if (
-        currentProject === null ||
-        playback.command.status === 'pending' ||
-        pendingProjectId === currentProject.id ||
-        playback.selectedProjectId !== currentProject.id
-      ) {
+      if (currentProject === null || isEntering || isOpeningEditor) {
+        return;
+      }
+      const segment = getConfiguredPracticeSegment(currentProject, segmentIndex);
+      if (segment === null) {
         return;
       }
 
-      const segment = getConfiguredPracticeSegment(currentProject, segmentNumber);
-      if (segment === null || playback.selectedSegment === segmentNumber) {
-        return;
-      }
-
+      const command = prepareCommandRef.current + 1;
+      prepareCommandRef.current = command;
       const token = focusTokenRef.current;
       const range = calculatePlaybackRange(segment);
-      void playback
-        .stopAndSeek(range.playFromMs)
-        .then(() => {
-          if (!tokenIsCurrent(token)) {
-            return;
-          }
-
-          const latest = usePlaybackStore.getState();
-          latest.setSelectedSegment(segmentNumber);
-          return persistPreferencePair(latest.selectedRate, segmentNumber, token);
+      setSelectedSegment(segmentIndex);
+      setIsPreparingSegment(true);
+      setAudioLoadFailed(false);
+      void playerRef.current
+        .preparePracticeSegment({
+          segmentIndex,
+          clipStartMs: range.playFromMs,
+          clipEndMs: range.stopAtMs,
+          rate: playerRef.current.snapshot.rate,
         })
         .catch((error: unknown) => {
           showPlaybackError(error, token);
+        })
+        .finally(() => {
+          if (tokenIsCurrent(token) && prepareCommandRef.current === command) {
+            setIsPreparingSegment(false);
+          }
         });
     },
-    [pendingProjectId, persistPreferencePair, showPlaybackError, tokenIsCurrent],
+    [isEntering, isOpeningEditor, showPlaybackError, tokenIsCurrent],
   );
 
   const handleSelectRate = useCallback(
     (rate: PlaybackRate) => {
       const currentProject = projectRef.current;
-      const playback = usePlaybackStore.getState();
       if (
         currentProject === null ||
-        rate === playback.selectedRate ||
-        playback.command.status === 'pending' ||
-        pendingProjectId === currentProject.id ||
-        playback.selectedProjectId !== currentProject.id ||
-        !isPracticeAudioReady(playback.snapshot.state)
+        isEntering ||
+        isPreparingSegment ||
+        isOpeningEditor ||
+        rate === playerRef.current.snapshot.rate ||
+        !playerRef.current.setRate(rate)
       ) {
         return;
       }
 
       const token = focusTokenRef.current;
-      const latestSegment = playback.selectedSegment;
-      void playback
-        .setRate(rate)
-        .then(() => {
-          if (!tokenIsCurrent(token)) {
-            return;
-          }
-
-          return persistPreferencePair(rate, latestSegment, token);
-        })
-        .catch((error: unknown) => {
-          showPlaybackError(error, token);
-        });
+      void updateSelectedRate(currentProject.id, rate).catch(() => {
+        if (tokenIsCurrent(token)) {
+          Alert.alert(COPY.practice.preferenceErrorTitle, COPY.practice.preferenceErrorMessage);
+        }
+      });
     },
-    [pendingProjectId, persistPreferencePair, showPlaybackError, tokenIsCurrent],
+    [isEntering, isOpeningEditor, isPreparingSegment, tokenIsCurrent, updateSelectedRate],
   );
 
   const configuredSelection =
-    project === null || selectedProjectId !== project.id
-      ? null
-      : getConfiguredPracticeSegment(project, selectedSegment);
+    project === null ? null : getConfiguredPracticeSegment(project, selectedSegment);
   const selectedRange: PlaybackRange | null =
     configuredSelection === null ? null : calculatePlaybackRange(configuredSelection);
-  const commandPending = command.status === 'pending';
-  const preferencePending = project !== null && pendingProjectId === project.id;
-  const interactionDisabled =
-    commandPending ||
-    preferencePending ||
-    isOpeningEditor ||
-    project === null ||
-    selectedProjectId !== project.id ||
-    !isPracticeAudioReady(snapshot.state);
-  const playbackEnabled =
+  const playerOwnsProject =
     project !== null &&
-    selectedProjectId === project.id &&
-    canTogglePracticePlayback(
-      snapshot,
-      selectedRange,
-      commandPending || preferencePending || isOpeningEditor,
-    );
+    player.snapshot.mode === 'practice' &&
+    player.snapshot.projectId === project.id;
+  const playbackBusy = isEntering || isPreparingSegment || isOpeningEditor || isToggling;
+  const playbackEnabled =
+    playerOwnsProject &&
+    player.snapshot.segmentIndex === selectedSegment &&
+    canTogglePracticePlayback(player.snapshot, selectedRange, playbackBusy);
 
-  const handleTogglePlayback = useCallback(() => {
-    const currentProject = projectRef.current;
-    const playback = usePlaybackStore.getState();
-    if (
-      currentProject === null ||
-      playback.command.status === 'pending' ||
-      pendingProjectId === currentProject.id ||
-      playback.selectedProjectId !== currentProject.id
-    ) {
+  const handleTogglePlayback = () => {
+    if (!playbackEnabled) {
       return;
     }
-
-    const segment = getConfiguredPracticeSegment(currentProject, playback.selectedSegment);
-    if (segment === null) {
-      return;
-    }
-
-    const range = calculatePlaybackRange(segment);
-    const intent = getPracticePlaybackIntent(playback.snapshot, range);
-    const token = focusTokenRef.current;
     const acceptedAtMs = Date.now();
     if (!canAcceptPlaybackToggle(lastPlaybackToggleAtRef.current, acceptedAtMs)) {
       return;
     }
+    lastPlaybackToggleAtRef.current = acceptedAtMs;
+    const token = focusTokenRef.current;
+    setIsToggling(true);
+    void playerRef.current
+      .togglePractice()
+      .catch((error: unknown) => {
+        showPlaybackError(error, token);
+      })
+      .finally(() => {
+        if (tokenIsCurrent(token)) {
+          setIsToggling(false);
+        }
+      });
+  };
 
-    let operation: Promise<unknown> | null = null;
-
-    if (intent === 'pause') {
-      operation = playback.pause();
-    } else if (intent === 'resume') {
-      operation = playback.resume();
-    } else if (intent === 'play-range') {
-      operation = playback.playRange(range.playFromMs, range.stopAtMs, playback.selectedRate);
-    }
-
-    if (operation !== null) {
-      lastPlaybackToggleAtRef.current = acceptedAtMs;
-    }
-
-    void operation?.catch((error: unknown) => {
-      showPlaybackError(error, token);
-    });
-  }, [pendingProjectId, showPlaybackError]);
+  const handleBack = useCallback(() => {
+    playerRef.current.pause();
+    router.back();
+  }, []);
 
   const handleOpenEditor = useCallback(() => {
     const currentProject = projectRef.current;
-    const playback = usePlaybackStore.getState();
-    if (
-      currentProject === null ||
-      playback.command.status === 'pending' ||
-      pendingProjectId === currentProject.id ||
-      isOpeningEditorRef.current
-    ) {
+    if (currentProject === null || isOpeningEditor) {
       return;
     }
-
-    const token = focusTokenRef.current;
-    isOpeningEditorRef.current = true;
+    playerRef.current.pause();
     setIsOpeningEditor(true);
-    const pausePromise = playback.pause();
-    const pauseCommandId = usePlaybackStore.getState().command.latestId;
-    void pausePromise
-      .then(() => {
-        const latest = usePlaybackStore.getState();
-        if (
-          isUnmountingRef.current ||
-          !isOpeningEditorRef.current ||
-          latest.selectedProjectId !== currentProject.id ||
-          latest.command.latestId !== pauseCommandId
-        ) {
-          return;
-        }
-
-        router.push({
-          pathname: '/project/[projectId]/segments',
-          params: {
-            projectId: currentProject.id,
-            origin: 'practice',
-          },
-        });
-      })
-      .catch((error: unknown) => {
-        isOpeningEditorRef.current = false;
-        if (tokenIsCurrent(token)) {
-          setIsOpeningEditor(false);
-        }
-        showPlaybackError(error, token);
-      });
-  }, [pendingProjectId, showPlaybackError, tokenIsCurrent]);
+    router.push({
+      pathname: '/project/[projectId]/segments',
+      params: { projectId: currentProject.id, origin: 'practice' },
+    });
+  }, [isOpeningEditor]);
 
   if (!isInitialized && projectStoreError !== null) {
     return (
@@ -495,7 +384,7 @@ export default function PracticeProjectScreen() {
           <EmptyState
             actionLabel={COPY.practice.backAccessibilityLabel}
             message={COPY.practice.projectNotFoundMessage}
-            onAction={() => router.back()}
+            onAction={handleBack}
             title={COPY.practice.projectNotFoundTitle}
           />
         </View>
@@ -503,11 +392,10 @@ export default function PracticeProjectScreen() {
     );
   }
 
-  const displayRate = selectedProjectId === project.id ? selectedRate : project.preferredRate;
-  const showRetry =
-    selectedProjectId === project.id &&
-    !commandPending &&
-    (snapshot.state === 'idle' || snapshot.state === 'failed');
+  const displayRate = playerOwnsProject ? player.snapshot.rate : project.selectedRate;
+  const showRetry = audioLoadFailed || (playerOwnsProject && player.snapshot.status === 'error');
+  const controlsDisabled =
+    !playerOwnsProject || isEntering || isOpeningEditor || pendingProjectId === project.id;
 
   return (
     <SafeAreaView edges={['top', 'left', 'right', 'bottom']} style={styles.safeArea}>
@@ -517,7 +405,7 @@ export default function PracticeProjectScreen() {
           accessibilityLabel={COPY.practice.backAccessibilityLabel}
           accessibilityRole="button"
           hitSlop={8}
-          onPress={() => router.back()}
+          onPress={handleBack}
           style={styles.headerButton}
         >
           <Text style={styles.headerButtonLabel}>{'\u2039'}</Text>
@@ -528,11 +416,8 @@ export default function PracticeProjectScreen() {
         <Pressable
           accessibilityLabel={COPY.practice.settingsAccessibilityLabel}
           accessibilityRole="button"
-          accessibilityState={{
-            busy: isOpeningEditor,
-            disabled: commandPending || preferencePending,
-          }}
-          disabled={commandPending || preferencePending || isOpeningEditor}
+          accessibilityState={{ busy: isOpeningEditor, disabled: isOpeningEditor }}
+          disabled={isOpeningEditor}
           hitSlop={8}
           onPress={handleOpenEditor}
           style={styles.headerButton}
@@ -544,7 +429,7 @@ export default function PracticeProjectScreen() {
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <Text style={styles.sectionHeading}>{COPY.practice.speedHeading}</Text>
         <SpeedSelector
-          disabled={interactionDisabled}
+          disabled={controlsDisabled || isPreparingSegment}
           onSelectRate={handleSelectRate}
           selectedRate={displayRate}
         />
@@ -552,26 +437,26 @@ export default function PracticeProjectScreen() {
         <Text style={styles.sectionHeading}>{COPY.practice.segmentsHeading}</Text>
         <SegmentGrid
           durationMs={project.durationMs}
-          interactionDisabled={interactionDisabled}
+          interactionDisabled={controlsDisabled}
           onSelectSegment={handleSelectSegment}
           segments={project.segments}
-          selectedSegment={selectedProjectId === project.id ? selectedSegment : null}
+          selectedSegment={selectedSegment}
         />
 
         <View style={styles.statusArea}>
-          {selectedRange !== null ? (
+          {selectedRange === null ? (
+            <Text style={styles.statusText}>{COPY.practice.noConfiguredSegments}</Text>
+          ) : (
             <Text style={styles.statusText}>
               {COPY.practice.rangeSummary(
                 formatSegmentTime(selectedRange.playFromMs),
                 formatSegmentTime(selectedRange.stopAtMs),
-                formatSegmentTime(snapshot.currentTimeMs),
+                formatSegmentTime(player.snapshot.sourcePositionMs),
               )}
             </Text>
-          ) : (
-            <Text style={styles.statusText}>{COPY.practice.noConfiguredSegments}</Text>
           )}
 
-          {commandPending && (command.kind === 'load-audio' || command.kind === 'stop-and-seek') ? (
+          {isEntering || isPreparingSegment || player.snapshot.status === 'loading' ? (
             <Text style={styles.statusText}>{COPY.practice.loadingAudio}</Text>
           ) : null}
 
@@ -592,8 +477,8 @@ export default function PracticeProjectScreen() {
         <PlaybackButton
           disabled={!playbackEnabled}
           onPress={handleTogglePlayback}
-          pending={commandPending && command.kind !== 'set-rate' && command.kind !== 'load-audio'}
-          playing={selectedProjectId === project.id && snapshot.state === 'playing'}
+          pending={isEntering || isPreparingSegment || isToggling}
+          playing={playerOwnsProject && player.snapshot.status === 'playing'}
         />
       </View>
     </SafeAreaView>

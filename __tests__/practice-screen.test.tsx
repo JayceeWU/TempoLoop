@@ -1,27 +1,57 @@
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import { Alert } from 'react-native';
 
-import type { PlaybackSnapshot } from '../modules/dance-audio';
 import PracticeProjectScreen from '../app/project/[projectId]';
+import type { PlaybackRate, PlaybackSnapshot } from '@/domain/playback';
 import type { DanceProject } from '@/domain/project';
+import type { PracticeSegmentInput } from '@/playback/PlaybackCoordinator';
+import type { TempoLoopPlayerController } from '@/playback/useTempoLoopPlayer';
 import { projectRepository } from '@/repositories/ProjectRepository';
-import { usePlaybackStore } from '@/stores/usePlaybackStore';
 import { useProjectStore } from '@/stores/useProjectStore';
-import { AppError } from '@/utils/errors';
 
 const mockRouterBack = jest.fn();
 const mockRouterPush = jest.fn();
-let mockNowMs = 100_000;
-let mockRouteParams: {
-  projectId?: string | string[];
-} = { projectId: 'project-1' };
+const mockEnterPractice = jest.fn<
+  ReturnType<TempoLoopPlayerController['enterPractice']>,
+  Parameters<TempoLoopPlayerController['enterPractice']>
+>();
+const mockPreparePracticeSegment = jest.fn<
+  ReturnType<TempoLoopPlayerController['preparePracticeSegment']>,
+  Parameters<TempoLoopPlayerController['preparePracticeSegment']>
+>();
+const mockTogglePractice = jest.fn<
+  ReturnType<TempoLoopPlayerController['togglePractice']>,
+  Parameters<TempoLoopPlayerController['togglePractice']>
+>();
+const mockPause = jest.fn();
+const mockSetRate = jest.fn<boolean, [PlaybackRate]>();
+const mockDeactivate = jest.fn();
+const mockUpdateSelectedRate = jest.fn(async () => undefined);
+const mockInitialize = jest.fn(async () => undefined);
+
+let mockRouteParams: { projectId?: string | string[] } = { projectId: 'project-1' };
+let mockSnapshot: PlaybackSnapshot;
+const mockSnapshotListeners = new Set<() => void>();
+
+function mockGetSnapshot(): PlaybackSnapshot {
+  return mockSnapshot;
+}
+
+function mockSubscribe(listener: () => void): () => void {
+  mockSnapshotListeners.add(listener);
+  return () => mockSnapshotListeners.delete(listener);
+}
+
+function mockPatchSnapshot(patch: Partial<PlaybackSnapshot>): void {
+  mockSnapshot = { ...mockSnapshot, ...patch };
+  for (const listener of mockSnapshotListeners) {
+    listener();
+  }
+}
 
 jest.mock('expo-router', () => {
   const ReactModule = jest.requireActual<typeof import('react')>('react');
-  const Stack = Object.assign(() => null, {
-    Screen: () => null,
-  });
-
+  const Stack = Object.assign(() => null, { Screen: () => null });
   return {
     Stack,
     router: {
@@ -33,205 +63,146 @@ jest.mock('expo-router', () => {
   };
 });
 
+jest.mock('@/playback/useTempoLoopPlayer', () => {
+  const ReactModule = jest.requireActual<typeof import('react')>('react');
+  return {
+    useTempoLoopPlayer: (): TempoLoopPlayerController => ({
+      snapshot: ReactModule.useSyncExternalStore(mockSubscribe, mockGetSnapshot, mockGetSnapshot),
+      enterEditor: jest.fn(),
+      enterPractice: mockEnterPractice,
+      preparePracticeSegment: mockPreparePracticeSegment,
+      togglePractice: mockTogglePractice,
+      playEditor: jest.fn(),
+      pause: mockPause,
+      seekEditor: jest.fn(),
+      setRate: mockSetRate,
+      getCurrentPositionMs: () => mockSnapshot.sourcePositionMs,
+      deactivate: mockDeactivate,
+      clearSource: jest.fn(),
+    }),
+  };
+});
+
 const PROJECT: DanceProject = {
   schemaVersion: 1,
   id: 'project-1',
   name: 'Warm Up',
   createdAtIso: '2026-07-30T12:00:00.000Z',
   updatedAtIso: '2026-07-30T12:00:00.000Z',
+  audioFileName: 'audio.m4a',
+  waveformFileName: 'waveform.json',
   durationMs: 90_000,
-  sourceVideoBytes: 1_024,
-  audioRelativePath: 'Projects/project-1/audio.m4a',
-  waveformRelativePath: 'Projects/project-1/waveform.json',
-  preferredRate: 1,
-  lastSelectedSegment: 1,
+  sourceDisplayName: null,
+  sourceSizeBytes: 1_024,
+  selectedRate: 1,
   segments: [
-    { number: 1, startMs: 10_000, endMs: 20_000 },
-    { number: 2, startMs: 30_000, endMs: 40_000 },
-    { number: 3, startMs: null, endMs: null },
-    { number: 4, startMs: null, endMs: null },
-    { number: 5, startMs: null, endMs: null },
-    { number: 6, startMs: null, endMs: null },
+    { id: 'segment-1', index: 0, startMs: 10_000, endMs: 20_000 },
+    { id: 'segment-2', index: 1, startMs: 30_000, endMs: 40_000 },
+    { id: 'segment-3', index: 2, startMs: null, endMs: null },
+    { id: 'segment-4', index: 3, startMs: null, endMs: null },
+    { id: 'segment-5', index: 4, startMs: null, endMs: null },
+    { id: 'segment-6', index: 5, startMs: null, endMs: null },
   ],
 };
 
-const READY_SNAPSHOT: PlaybackSnapshot = {
-  state: 'ready',
-  currentTimeMs: 4_000,
-  durationMs: 90_000,
-  rate: 1,
-  activeRangeStartMs: null,
-  activeRangeEndMs: null,
-};
-
-const IDLE_COMMAND = {
-  latestId: 0,
-  pendingId: null,
-  kind: null,
-  status: 'idle',
-} as const;
-
-const mockInitialize = jest.fn(async () => undefined);
-const mockUpdatePreferences = jest.fn(async () => undefined);
-const mockLoadAudio = jest.fn<Promise<PlaybackSnapshot>, [audioUri: string]>();
-const mockPlayRange = jest.fn<
-  Promise<PlaybackSnapshot>,
-  [startMs: number, endMs: number, rate: 1 | 0.9 | 0.8 | 0.7]
->();
-const mockPause = jest.fn<Promise<PlaybackSnapshot>, []>();
-const mockResume = jest.fn<Promise<PlaybackSnapshot>, []>();
-const mockStopAndSeek = jest.fn<Promise<PlaybackSnapshot>, [positionMs: number]>();
-const mockSetRate = jest.fn<Promise<PlaybackSnapshot>, [rate: 1 | 0.9 | 0.8 | 0.7]>();
-const mockUnload = jest.fn<Promise<void>, []>();
-const mockSetSelection = jest.fn();
-const mockSetSelectedSegment = jest.fn();
-
-function deferred<Value>(): {
-  readonly promise: Promise<Value>;
-  resolve(value: Value): void;
-} {
-  let resolvePromise!: (value: Value) => void;
-  const promise = new Promise<Value>((resolve) => {
-    resolvePromise = resolve;
-  });
-
+function idleSnapshot(): PlaybackSnapshot {
   return {
-    promise,
-    resolve: resolvePromise,
+    mode: 'idle',
+    status: 'idle',
+    projectId: null,
+    segmentIndex: null,
+    sourcePositionMs: 0,
+    sourceDurationMs: 0,
+    clipStartMs: 0,
+    clipEndMs: null,
+    rate: 1,
+    commandGeneration: 0,
   };
 }
 
-function installPlaybackActions(): void {
-  mockLoadAudio.mockImplementation(async () => {
-    usePlaybackStore.setState({ snapshot: READY_SNAPSHOT });
-    return READY_SNAPSHOT;
-  });
-  mockPlayRange.mockImplementation(async (startMs, endMs, rate) => {
-    const next: PlaybackSnapshot = {
-      ...READY_SNAPSHOT,
-      state: 'playing',
-      currentTimeMs: startMs,
+function installPlayerBehavior(): void {
+  mockEnterPractice.mockImplementation(async (input, rate) => {
+    mockPatchSnapshot({
+      mode: 'practice',
+      status: 'ready',
+      projectId: input.projectId,
+      segmentIndex: null,
+      sourcePositionMs: 0,
+      sourceDurationMs: input.durationMs,
+      clipStartMs: 0,
+      clipEndMs: null,
       rate,
-      activeRangeStartMs: startMs,
-      activeRangeEndMs: endMs,
-    };
-    usePlaybackStore.setState({ snapshot: next });
-    return next;
-  });
-  mockPause.mockImplementation(async () => {
-    const next: PlaybackSnapshot = {
-      ...usePlaybackStore.getState().snapshot,
-      state: 'paused',
-    };
-    usePlaybackStore.setState({ snapshot: next });
-    return next;
-  });
-  mockResume.mockImplementation(async () => {
-    const next: PlaybackSnapshot = {
-      ...usePlaybackStore.getState().snapshot,
-      state: 'playing',
-    };
-    usePlaybackStore.setState({ snapshot: next });
-    return next;
-  });
-  mockStopAndSeek.mockImplementation(async (positionMs) => {
-    const next: PlaybackSnapshot = {
-      ...READY_SNAPSHOT,
-      currentTimeMs: positionMs,
-    };
-    usePlaybackStore.setState({ snapshot: next });
-    return next;
-  });
-  mockSetRate.mockImplementation(async (rate) => {
-    const next: PlaybackSnapshot = {
-      ...usePlaybackStore.getState().snapshot,
-      rate,
-    };
-    usePlaybackStore.setState({
-      selectedRate: rate,
-      snapshot: next,
+      commandGeneration: mockSnapshot.commandGeneration + 1,
     });
-    return next;
+    return true;
   });
-  mockUnload.mockImplementation(async () => {
-    usePlaybackStore.setState({
-      selectedProjectId: null,
-      selectedSegment: null,
-      snapshot: {
-        ...READY_SNAPSHOT,
-        state: 'idle',
-        currentTimeMs: 0,
-        durationMs: 0,
-      },
+  mockPreparePracticeSegment.mockImplementation(async (input: PracticeSegmentInput) => {
+    mockPatchSnapshot({
+      status: 'ready',
+      segmentIndex: input.segmentIndex,
+      sourcePositionMs: input.clipStartMs,
+      clipStartMs: input.clipStartMs,
+      clipEndMs: input.clipEndMs,
+      rate: input.rate,
+      commandGeneration: mockSnapshot.commandGeneration + 1,
     });
+    return true;
   });
-  mockSetSelection.mockImplementation(
-    ({
-      projectId,
-      segmentNumber,
-      rate,
-    }: {
-      projectId: string | null;
-      segmentNumber: 1 | 2 | 3 | 4 | 5 | 6 | null;
-      rate: 1 | 0.9 | 0.8 | 0.7;
-    }) => {
-      usePlaybackStore.setState({
-        selectedProjectId: projectId,
-        selectedSegment: segmentNumber,
-        selectedRate: rate,
+  mockTogglePractice.mockImplementation(async () => {
+    mockPatchSnapshot({
+      status: mockSnapshot.status === 'playing' ? 'paused' : 'playing',
+      commandGeneration: mockSnapshot.commandGeneration + 1,
+    });
+    return true;
+  });
+  mockPause.mockImplementation(() => {
+    if (mockSnapshot.status !== 'idle' && mockSnapshot.status !== 'error') {
+      mockPatchSnapshot({
+        status: 'paused',
+        commandGeneration: mockSnapshot.commandGeneration + 1,
       });
-    },
-  );
-  mockSetSelectedSegment.mockImplementation((segmentNumber: 1 | 2 | 3 | 4 | 5 | 6 | null) => {
-    usePlaybackStore.setState({
-      selectedSegment: segmentNumber,
-    });
+    }
   });
-
-  usePlaybackStore.setState({
-    snapshot: READY_SNAPSHOT,
-    lastEventReason: null,
-    selectedProjectId: PROJECT.id,
-    selectedSegment: 1,
-    selectedRate: 1,
-    command: IDLE_COMMAND,
-    lastError: null,
-    loadAudio: mockLoadAudio,
-    playRange: mockPlayRange,
-    pause: mockPause,
-    resume: mockResume,
-    stopAndSeek: mockStopAndSeek,
-    setRate: mockSetRate,
-    unload: mockUnload,
-    setSelection: mockSetSelection,
-    setSelectedSegment: mockSetSelectedSegment,
+  mockSetRate.mockImplementation((rate) => {
+    mockPatchSnapshot({ rate, commandGeneration: mockSnapshot.commandGeneration + 1 });
+    return true;
+  });
+  mockDeactivate.mockImplementation(() => {
+    mockPatchSnapshot({
+      mode: 'idle',
+      status: 'idle',
+      projectId: null,
+      segmentIndex: null,
+      clipStartMs: 0,
+      clipEndMs: null,
+      commandGeneration: mockSnapshot.commandGeneration + 1,
+    });
   });
 }
 
-async function renderPreparedPracticeScreen() {
+async function renderPrepared(project: DanceProject = PROJECT) {
+  useProjectStore.setState({ projects: [project] });
   const screen = await render(<PracticeProjectScreen />);
   await waitFor(() => {
-    expect(mockStopAndSeek).toHaveBeenCalledWith(4_000);
+    expect(mockPreparePracticeSegment).toHaveBeenCalledWith({
+      segmentIndex: 0,
+      clipStartMs: 4_000,
+      clipEndMs: 20_000,
+      rate: project.selectedRate,
+    });
   });
-
-  mockStopAndSeek.mockClear();
-  mockSetRate.mockClear();
-  mockUpdatePreferences.mockClear();
-  mockPause.mockClear();
-  mockResume.mockClear();
-  mockPlayRange.mockClear();
-  mockRouterPush.mockClear();
   return screen;
 }
 
 beforeEach(() => {
   jest.clearAllMocks();
-  mockNowMs = 100_000;
-  jest.spyOn(Date, 'now').mockImplementation(() => mockNowMs);
+  mockSnapshotListeners.clear();
+  mockSnapshot = idleSnapshot();
   mockRouteParams = { projectId: PROJECT.id };
   jest
     .spyOn(projectRepository, 'resolveAudioUri')
-    .mockReturnValue('file:///documents/TempoLoop/Projects/project-1/audio.m4a');
+    .mockReturnValue('file:///documents/TempoLoop/projects/project-1/audio.m4a');
+  jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
   useProjectStore.setState({
     projects: [PROJECT],
     isLoading: false,
@@ -239,295 +210,134 @@ beforeEach(() => {
     pendingProjectId: null,
     error: null,
     initialize: mockInitialize,
-    updatePreferences: mockUpdatePreferences,
+    updateSelectedRate: mockUpdateSelectedRate,
   });
-  installPlaybackActions();
-  jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  installPlayerBehavior();
 });
 
 afterEach(() => {
   jest.restoreAllMocks();
 });
 
-describe('practice project screen', () => {
-  it('loads project audio through the repository boundary and seeks the initial lead-in', async () => {
-    usePlaybackStore.setState({
-      selectedProjectId: null,
-      selectedSegment: null,
-      snapshot: {
-        ...READY_SNAPSHOT,
-        state: 'idle',
-        currentTimeMs: 0,
-        durationMs: 0,
+describe('Android practice project screen', () => {
+  it('enters the shared player and prepares the first valid segment at its lead-in', async () => {
+    const screen = await renderPrepared();
+
+    expect(mockEnterPractice).toHaveBeenCalledWith(
+      {
+        projectId: PROJECT.id,
+        audioUri: 'file:///documents/TempoLoop/projects/project-1/audio.m4a',
+        durationMs: PROJECT.durationMs,
       },
-    });
+      1,
+    );
+    expect(
+      screen.getByRole('button', { name: /Segment 1/ }).props.accessibilityState,
+    ).toMatchObject({ selected: true });
+    expect(screen.getByRole('button', { name: 'Play selected segment' })).toBeEnabled();
+  });
 
+  it('keeps Play disabled when no segment is configured', async () => {
+    const emptyProject: DanceProject = {
+      ...PROJECT,
+      segments: PROJECT.segments.map((segment) => ({
+        ...segment,
+        startMs: null,
+        endMs: null,
+      })) as DanceProject['segments'],
+    };
+    useProjectStore.setState({ projects: [emptyProject] });
     const screen = await render(<PracticeProjectScreen />);
+    await waitFor(() => expect(mockEnterPractice).toHaveBeenCalled());
 
-    await waitFor(() => {
-      expect(mockLoadAudio).toHaveBeenCalledWith(
-        'file:///documents/TempoLoop/Projects/project-1/audio.m4a',
-      );
-      expect(mockStopAndSeek).toHaveBeenCalledWith(4_000);
+    expect(mockPreparePracticeSegment).not.toHaveBeenCalled();
+    expect(screen.getByText('Set at least one segment to begin practicing.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Play selected segment' })).toBeDisabled();
+  });
+
+  it('prepares a selected segment without starting playback', async () => {
+    const screen = await renderPrepared();
+    mockPreparePracticeSegment.mockClear();
+    mockTogglePractice.mockClear();
+
+    await fireEvent.press(screen.getByRole('button', { name: /Segment 2/ }));
+
+    expect(mockPreparePracticeSegment).toHaveBeenCalledWith({
+      segmentIndex: 1,
+      clipStartMs: 24_000,
+      clipEndMs: 40_000,
+      rate: 1,
     });
-    expect(projectRepository.resolveAudioUri).toHaveBeenCalledWith(PROJECT);
-    await screen.unmount();
+    expect(mockTogglePractice).not.toHaveBeenCalled();
   });
 
-  it('starts the exact selected range at the selected rate', async () => {
-    const screen = await renderPreparedPracticeScreen();
-
-    await fireEvent.press(
-      screen.getByRole('button', {
-        name: 'Play selected segment',
-      }),
-    );
-
-    expect(mockPlayRange).toHaveBeenCalledWith(4_000, 20_000, 1);
-    await screen.unmount();
-  });
-
-  it('uses the native pause command while the range is playing', async () => {
-    const screen = await renderPreparedPracticeScreen();
+  it('applies a playing rate immediately without seek/reload and persists it', async () => {
+    const screen = await renderPrepared();
+    mockEnterPractice.mockClear();
+    mockPreparePracticeSegment.mockClear();
     await act(() => {
-      usePlaybackStore.setState({
-        snapshot: {
-          ...READY_SNAPSHOT,
-          state: 'playing',
-          activeRangeStartMs: 4_000,
-          activeRangeEndMs: 20_000,
-        },
-      });
+      mockPatchSnapshot({ status: 'playing' });
     });
 
-    await fireEvent.press(
-      screen.getByRole('button', {
-        name: 'Pause playback',
-      }),
-    );
+    await fireEvent.press(screen.getByRole('radio', { name: '0.8x playback speed' }));
 
-    expect(mockPause).toHaveBeenCalledTimes(1);
-    expect(mockPlayRange).not.toHaveBeenCalled();
-    expect(mockResume).not.toHaveBeenCalled();
-    await screen.unmount();
+    expect(mockSetRate).toHaveBeenCalledWith(0.8);
+    expect(mockEnterPractice).not.toHaveBeenCalled();
+    expect(mockPreparePracticeSegment).not.toHaveBeenCalled();
+    await waitFor(() => expect(mockUpdateSelectedRate).toHaveBeenCalledWith(PROJECT.id, 0.8));
   });
 
-  it('ignores an immediate playback double tap and accepts another toggle after 150 ms', async () => {
-    const screen = await renderPreparedPracticeScreen();
+  it('delegates play and pause toggles to the coordinator', async () => {
+    const screen = await renderPrepared();
 
-    await fireEvent.press(
-      screen.getByRole('button', {
-        name: 'Play selected segment',
-      }),
-    );
-    expect(mockPlayRange).toHaveBeenCalledTimes(1);
-
+    await fireEvent.press(screen.getByRole('button', { name: 'Play selected segment' }));
+    expect(mockTogglePractice).toHaveBeenCalledTimes(1);
     await waitFor(() => {
       expect(screen.getByRole('button', { name: 'Pause playback' })).toBeTruthy();
     });
+
+    await act(() => {
+      jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 200);
+    });
     await fireEvent.press(screen.getByRole('button', { name: 'Pause playback' }));
-    expect(mockPause).not.toHaveBeenCalled();
-
-    mockNowMs += 150;
-    await fireEvent.press(screen.getByRole('button', { name: 'Pause playback' }));
-    expect(mockPause).toHaveBeenCalledTimes(1);
-    expect(mockPlayRange).toHaveBeenCalledTimes(1);
-    await screen.unmount();
+    expect(mockTogglePractice).toHaveBeenCalledTimes(2);
   });
 
-  it('resumes only a matching paused range and restarts a stale paused range', async () => {
-    const screen = await renderPreparedPracticeScreen();
+  it('pauses before opening settings and deactivates on route exit', async () => {
+    const screen = await renderPrepared();
 
-    await act(() => {
-      usePlaybackStore.setState({
-        snapshot: {
-          ...READY_SNAPSHOT,
-          state: 'paused',
-          activeRangeStartMs: 4_000,
-          activeRangeEndMs: 20_000,
-        },
-      });
-    });
-    await fireEvent.press(
-      screen.getByRole('button', {
-        name: 'Play selected segment',
-      }),
-    );
-    expect(mockResume).toHaveBeenCalledTimes(1);
-    expect(mockPlayRange).not.toHaveBeenCalled();
+    await fireEvent.press(screen.getByRole('button', { name: 'Edit segment times' }));
 
-    mockResume.mockClear();
-    mockNowMs += 150;
-    await act(() => {
-      usePlaybackStore.setState({
-        snapshot: {
-          ...READY_SNAPSHOT,
-          state: 'paused',
-          activeRangeStartMs: 3_000,
-          activeRangeEndMs: 20_000,
-        },
-      });
-    });
-    await fireEvent.press(
-      screen.getByRole('button', {
-        name: 'Play selected segment',
-      }),
-    );
-    expect(mockResume).not.toHaveBeenCalled();
-    expect(mockPlayRange).toHaveBeenCalledWith(4_000, 20_000, 1);
-    await screen.unmount();
-  });
-
-  it('changes speed without seeking and persists the latest coherent pair', async () => {
-    const screen = await renderPreparedPracticeScreen();
-
-    await fireEvent.press(
-      screen.getByRole('radio', {
-        name: '0.8x playback speed',
-      }),
-    );
-    await waitFor(() => {
-      expect(mockUpdatePreferences).toHaveBeenCalledWith(PROJECT.id, 0.8, 1);
-    });
-
-    expect(mockSetRate).toHaveBeenCalledWith(0.8);
-    expect(mockStopAndSeek).not.toHaveBeenCalled();
-    expect(mockPlayRange).not.toHaveBeenCalled();
-    await screen.unmount();
-  });
-
-  it('switches segments with one lead-in seek and persists the latest rate', async () => {
-    usePlaybackStore.setState({ selectedRate: 0.9 });
-    const screen = await renderPreparedPracticeScreen();
-    await act(() => {
-      usePlaybackStore.setState({ selectedRate: 0.9 });
-    });
-
-    await fireEvent.press(screen.getByRole('button', { name: /Segment 2/ }));
-    await waitFor(() => {
-      expect(mockUpdatePreferences).toHaveBeenCalledWith(PROJECT.id, 0.9, 2);
-    });
-
-    expect(mockStopAndSeek).toHaveBeenCalledTimes(1);
-    expect(mockStopAndSeek).toHaveBeenCalledWith(24_000);
-    expect(mockPause).not.toHaveBeenCalled();
-    expect(mockSetSelectedSegment).toHaveBeenCalledWith(2);
-    await screen.unmount();
-  });
-
-  it('pauses before opening the editor and unloads directly on unmount', async () => {
-    const screen = await renderPreparedPracticeScreen();
-
-    await fireEvent.press(
-      screen.getByRole('button', {
-        name: 'Edit segment times',
-      }),
-    );
-    expect(mockPause).toHaveBeenCalledTimes(1);
-    const pauseResult = mockPause.mock.results[0]?.value;
-    expect(pauseResult).toBeInstanceOf(Promise);
-    if (pauseResult !== undefined) {
-      await act(async () => {
-        await pauseResult;
-      });
-    }
-    expect(usePlaybackStore.getState().selectedProjectId).toBe(PROJECT.id);
-    await waitFor(() => {
-      expect(mockRouterPush).toHaveBeenCalledWith({
-        pathname: '/project/[projectId]/segments',
-        params: {
-          projectId: PROJECT.id,
-          origin: 'practice',
-        },
-      });
+    expect(mockPause).toHaveBeenCalled();
+    expect(mockRouterPush).toHaveBeenCalledWith({
+      pathname: '/project/[projectId]/segments',
+      params: { projectId: PROJECT.id, origin: 'practice' },
     });
     expect(mockPause.mock.invocationCallOrder[0]).toBeLessThan(
-      mockRouterPush.mock.invocationCallOrder[0] ?? 0,
+      mockRouterPush.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER,
     );
 
-    mockPause.mockClear();
-    await screen.unmount();
-    expect(mockUnload).toHaveBeenCalledTimes(1);
-    expect(mockPause).not.toHaveBeenCalled();
-  });
-
-  it('does not navigate after an unresolved gear pause is superseded by unmount', async () => {
-    const pendingPause = deferred<PlaybackSnapshot>();
-    const screen = await renderPreparedPracticeScreen();
-    mockPause.mockReturnValueOnce(pendingPause.promise);
-
-    await fireEvent.press(
-      screen.getByRole('button', {
-        name: 'Edit segment times',
-      }),
-    );
-    expect(mockPause).toHaveBeenCalledTimes(1);
-
-    await screen.unmount();
-    pendingPause.resolve({
-      ...READY_SNAPSHOT,
-      state: 'paused',
-    });
     await act(async () => {
-      await pendingPause.promise;
+      screen.unmount();
     });
-
-    expect(mockUnload).toHaveBeenCalledTimes(1);
-    expect(mockRouterPush).not.toHaveBeenCalled();
+    expect(mockDeactivate).toHaveBeenCalled();
   });
 
-  it('offers an audio retry when lifecycle cancellation leaves loading idle', async () => {
-    usePlaybackStore.setState({
-      snapshot: {
-        ...READY_SNAPSHOT,
-        state: 'failed',
-      },
+  it('allows a newer segment selection while an older seek is pending', async () => {
+    let resolveFirst!: (value: boolean) => void;
+    const firstSeek = new Promise<boolean>((resolve) => {
+      resolveFirst = resolve;
     });
-    mockLoadAudio.mockRejectedValueOnce(
-      new AppError('E_CANCELLED', 'Loading was cancelled when the app became inactive.'),
-    );
+    const screen = await renderPrepared();
+    mockPreparePracticeSegment.mockClear();
+    mockPreparePracticeSegment
+      .mockImplementationOnce(() => firstSeek)
+      .mockImplementationOnce(async () => true);
 
-    const screen = await render(<PracticeProjectScreen />);
-    await waitFor(() => {
-      expect(mockLoadAudio).toHaveBeenCalledTimes(1);
-      expect(screen.getByRole('button', { name: 'Try Again' })).toBeOnTheScreen();
-    });
+    await fireEvent.press(screen.getByRole('button', { name: /Segment 2/ }));
+    await fireEvent.press(screen.getByRole('button', { name: /Segment 1/ }));
 
-    await fireEvent.press(screen.getByRole('button', { name: 'Try Again' }));
-    await waitFor(() => {
-      expect(mockLoadAudio).toHaveBeenCalledTimes(2);
-    });
-    await screen.unmount();
-  });
-
-  it('shows not-found instead of an endless spinner for an initialized empty library', async () => {
-    useProjectStore.setState({
-      projects: [],
-      isInitialized: true,
-      isLoading: false,
-      error: null,
-    });
-
-    const screen = await render(<PracticeProjectScreen />);
-
-    expect(screen.getByText('Project not found')).toBeOnTheScreen();
-    expect(screen.queryByRole('progressbar')).not.toBeOnTheScreen();
-    await screen.unmount();
-  });
-
-  it('offers an explicit project-library retry without an initialization loop', async () => {
-    useProjectStore.setState({
-      projects: [],
-      isInitialized: false,
-      isLoading: false,
-      error: 'Index could not be read.',
-    });
-
-    const screen = await render(<PracticeProjectScreen />);
-    expect(mockInitialize).not.toHaveBeenCalled();
-
-    await fireEvent.press(screen.getByRole('button', { name: 'Try Again' }));
-    expect(mockInitialize).toHaveBeenCalledTimes(1);
-    await screen.unmount();
+    expect(mockPreparePracticeSegment).toHaveBeenCalledTimes(2);
+    await act(async () => resolveFirst(false));
   });
 });

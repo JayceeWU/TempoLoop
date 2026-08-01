@@ -2,26 +2,45 @@ import type { ExpoConfig } from 'expo/config';
 
 const config: ExpoConfig = {
   name: 'TempoLoop',
-  slug: 'tempo-loop',
+  owner: 'jwu453',
+  slug: 'tempoloop',
   scheme: 'tempoloop',
-  version: '0.1.0',
+  version: '1.0.0',
   orientation: 'portrait',
-  platforms: ['ios'],
+  platforms: ['android'],
   userInterfaceStyle: 'automatic',
   icon: './assets/images/tempoloop-icon-v2.png',
   updates: {
     enabled: false,
   },
-  ios: {
-    bundleIdentifier: 'com.jipeng.tempoloop',
-    deploymentTarget: '16.4',
-    supportsTablet: false,
-    infoPlist: {
-      ITSAppUsesNonExemptEncryption: false,
+  extra: {
+    eas: {
+      projectId: 'b2ba5951-4f59-4fdf-83a4-ad1798b8e452',
     },
+  },
+  android: {
+    package: 'com.tempoloop.app',
+    versionCode: 1,
+    adaptiveIcon: {
+      foregroundImage: './assets/images/adaptive-icon.png',
+      backgroundColor: '#120A24',
+    },
+    blockedPermissions: [
+      'android.permission.CAMERA',
+      'android.permission.RECORD_AUDIO',
+      'android.permission.MANAGE_EXTERNAL_STORAGE',
+      'android.permission.READ_EXTERNAL_STORAGE',
+      'android.permission.WRITE_EXTERNAL_STORAGE',
+      'android.permission.READ_MEDIA_AUDIO',
+      'android.permission.READ_MEDIA_IMAGES',
+      'android.permission.READ_MEDIA_VIDEO',
+      'android.permission.READ_MEDIA_VISUAL_USER_SELECTED',
+      'android.permission.ACCESS_MEDIA_LOCATION',
+    ],
   },
   plugins: [
     'expo-router',
+    'expo-asset',
     [
       'expo-splash-screen',
       {
@@ -34,13 +53,13 @@ const config: ExpoConfig = {
         },
       },
     ],
+    'expo-document-picker',
     [
-      'expo-image-picker',
+      'expo-audio',
       {
-        photosPermission:
-          'TempoLoop uses the video you select only to extract audio for offline dance practice.',
-        cameraPermission: false,
-        microphonePermission: false,
+        recordAudioAndroid: false,
+        enableBackgroundPlayback: false,
+        enableBackgroundRecording: false,
       },
     ],
   ],

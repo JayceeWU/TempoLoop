@@ -8,7 +8,8 @@ import { useProjectStore } from '@/stores/useProjectStore';
 const mockRouterPush = jest.fn();
 const mockImportCoordinator = {
   isImportActive: jest.fn(() => false),
-  selectVideo: jest.fn(),
+  selectVideoFromGallery: jest.fn(),
+  selectAudio: jest.fn(),
   discardSelection: jest.fn(),
   importProject: jest.fn(),
   cancelActiveImport: jest.fn(),

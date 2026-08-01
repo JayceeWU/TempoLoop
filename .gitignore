@@ -18,6 +18,23 @@ expo-env.d.ts
 /android/
 .kotlin/
 
+# Android and Gradle build output
+.gradle/
+**/.gradle/
+**/build/
+.cxx/
+.externalNativeBuild/
+captures/
+*.apk
+*.aab
+*.apks
+local.properties
+
+# Android signing and service credentials
+*.jks
+*.keystore
+google-services.json
+
 # Logs and caches
 *.log
 npm-debug.*

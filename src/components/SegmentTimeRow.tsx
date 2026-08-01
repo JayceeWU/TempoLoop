@@ -1,9 +1,10 @@
+import { forwardRef } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { AppButton } from '@/components/AppButton';
 import { COPY } from '@/constants/copy';
 import { colors, fontSizes, fontWeights, radii, spacing } from '@/constants/theme';
-import type { DanceSegment } from '@/domain/segment';
+import { segmentDisplayNumber, type DanceSegment } from '@/domain/segment';
 import { getDraftSegmentIssue, type SegmentEndpoint } from '@/domain/segmentDraft';
 import { formatEditorTime } from '@/utils/time';
 
@@ -12,6 +13,7 @@ export interface SegmentTimeRowProps {
   readonly durationMs: number;
   readonly disabled?: boolean;
   readonly setDisabled?: boolean;
+  readonly highlighted?: boolean;
   readonly confirmedEndpoint?: SegmentEndpoint | null;
   readonly onSet: (endpoint: SegmentEndpoint) => void;
   readonly onClear: () => void;
@@ -36,31 +38,38 @@ function validationMessage(segment: DanceSegment, durationMs: number): string | 
   return null;
 }
 
-export function SegmentTimeRow({
-  segment,
-  durationMs,
-  disabled = false,
-  setDisabled = false,
-  confirmedEndpoint = null,
-  onSet,
-  onClear,
-}: SegmentTimeRowProps) {
+export const SegmentTimeRow = forwardRef<Text, SegmentTimeRowProps>(function SegmentTimeRow(
+  {
+    segment,
+    durationMs,
+    disabled = false,
+    setDisabled = false,
+    highlighted = false,
+    confirmedEndpoint = null,
+    onSet,
+    onClear,
+  },
+  ref,
+) {
   const issue = validationMessage(segment, durationMs);
   const isEmpty = segment.startMs === null && segment.endMs === null;
+  const displayNumber = segmentDisplayNumber(segment.index);
 
   return (
     <View
-      accessibilityLabel={COPY.segmentEditor.segmentLabel(segment.number)}
-      style={styles.container}
+      style={[styles.container, highlighted && styles.highlightedContainer]}
+      testID={`segment-time-row-${segment.index}`}
     >
-      <Text style={styles.title}>{COPY.segmentEditor.segmentLabel(segment.number)}</Text>
+      <Text accessibilityRole="header" ref={ref} style={styles.title}>
+        {COPY.segmentEditor.segmentLabel(displayNumber)}
+      </Text>
 
       <View style={styles.endpointRow}>
         <Text style={styles.endpointLabel}>{COPY.segmentEditor.start}</Text>
         <Text style={styles.time}>{formatEditorTime(segment.startMs)}</Text>
         <AppButton
           accessibilityLabel={COPY.segmentEditor.setEndpointAccessibilityLabel(
-            segment.number,
+            displayNumber,
             'start',
           )}
           disabled={disabled || setDisabled}
@@ -76,7 +85,7 @@ export function SegmentTimeRow({
         <Text style={styles.time}>{formatEditorTime(segment.endMs)}</Text>
         <AppButton
           accessibilityLabel={COPY.segmentEditor.setEndpointAccessibilityLabel(
-            segment.number,
+            displayNumber,
             'end',
           )}
           disabled={disabled || setDisabled}
@@ -89,7 +98,7 @@ export function SegmentTimeRow({
 
       <View style={styles.footer}>
         <AppButton
-          accessibilityLabel={COPY.segmentEditor.clearAccessibilityLabel(segment.number)}
+          accessibilityLabel={COPY.segmentEditor.clearAccessibilityLabel(displayNumber)}
           disabled={disabled || isEmpty}
           label={COPY.common.clear}
           onPress={onClear}
@@ -113,7 +122,7 @@ export function SegmentTimeRow({
       ) : null}
     </View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   container: {
@@ -128,6 +137,10 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: fontSizes.body,
     fontWeight: fontWeights.semibold,
+  },
+  highlightedContainer: {
+    borderColor: colors.danger,
+    borderWidth: 2,
   },
   endpointRow: {
     alignItems: 'center',

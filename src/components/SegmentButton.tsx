@@ -2,7 +2,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { COPY } from '@/constants/copy';
 import { colors, fontSizes, fontWeights, radii, spacing } from '@/constants/theme';
-import type { DanceSegment } from '@/domain/segment';
+import { segmentDisplayNumber, type DanceSegment } from '@/domain/segment';
 import { isPracticeSegmentConfigured } from '@/domain/practice';
 import { formatSegmentTime } from '@/utils/time';
 
@@ -23,7 +23,7 @@ export function SegmentButton({
 }: SegmentButtonProps) {
   const configured = isPracticeSegmentConfigured(segment, durationMs);
   const disabled = !configured || interactionDisabled;
-  const label = COPY.practice.segmentLabel(segment.number);
+  const label = COPY.practice.segmentLabel(segmentDisplayNumber(segment.index));
   const range = configured
     ? `${formatSegmentTime(segment.startMs)} \u2013 ${formatSegmentTime(segment.endMs)}`
     : '--:-- \u2013 --:--';

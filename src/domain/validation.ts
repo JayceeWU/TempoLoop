@@ -1,26 +1,29 @@
 import {
   AUDIO_FILE_NAME,
   MAX_PROJECT_NAME_LENGTH,
-  PROJECTS_DIRECTORY_NAME,
   PROJECT_SCHEMA_VERSION,
   WAVEFORM_FILE_NAME,
   WAVEFORM_POINT_COUNT,
   WAVEFORM_SCHEMA_VERSION,
 } from '@/constants/app';
 import { PLAYBACK_RATES } from '@/domain/playback';
-import type { DanceProject, ProjectIndexFile, WaveformFile } from '@/domain/project';
+import type { DanceProject, StoredWaveform } from '@/domain/project';
 import {
-  SEGMENT_NUMBERS,
+  SEGMENT_IDS,
+  SEGMENT_INDEXES,
   getSegmentValidationIssue,
   type DanceSegment,
   type DanceSegments,
+  type SegmentId,
+  type SegmentIndex,
 } from '@/domain/segment';
 import { z } from 'zod';
 
-const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f-\u009f]+/g;
+const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f-\u009f]/u;
+const PATH_SEPARATOR_PATTERN = /[\\/]/u;
 
 export function normalizeProjectName(value: string): string {
-  return value.replace(CONTROL_CHARACTER_PATTERN, ' ').trim();
+  return value.trim();
 }
 
 function countUnicodeCodePoints(value: string): number {
@@ -38,16 +41,34 @@ export const ProjectNameSchema = z
       })
       .refine((value) => countUnicodeCodePoints(value) <= MAX_PROJECT_NAME_LENGTH, {
         message: `Project name must be ${MAX_PROJECT_NAME_LENGTH} characters or fewer.`,
+      })
+      .refine((value) => !CONTROL_CHARACTER_PATTERN.test(value), {
+        message: 'Project name cannot contain control characters.',
+      })
+      .refine((value) => !PATH_SEPARATOR_PATTERN.test(value), {
+        message: 'Project name cannot contain path separators.',
       }),
   );
 
-export const SegmentNumberSchema = z.union(SEGMENT_NUMBERS.map((number) => z.literal(number)));
+export const SegmentIndexSchema: z.ZodType<SegmentIndex> = z.union(
+  SEGMENT_INDEXES.map((index) => z.literal(index)),
+);
+export const SegmentIdSchema: z.ZodType<SegmentId> = z.union(
+  SEGMENT_IDS.map((id) => z.literal(id)),
+);
 
 const NullableMillisecondsSchema = z.number().finite().int().nullable();
 
 function addSegmentValidationIssue(segment: DanceSegment, context: z.RefinementCtx): void {
-  const durationForIndependentChecks = Number.MAX_SAFE_INTEGER;
-  const issue = getSegmentValidationIssue(segment, durationForIndependentChecks);
+  if (segment.id !== SEGMENT_IDS[segment.index]) {
+    context.addIssue({
+      code: 'custom',
+      path: ['id'],
+      message: 'Segment ID must match its index.',
+    });
+  }
+
+  const issue = getSegmentValidationIssue(segment, Number.MAX_SAFE_INTEGER);
 
   if (issue === null) {
     return;
@@ -84,7 +105,8 @@ function addSegmentValidationIssue(segment: DanceSegment, context: z.RefinementC
 }
 
 const DanceSegmentShape = {
-  number: SegmentNumberSchema,
+  id: SegmentIdSchema,
+  index: SegmentIndexSchema,
   startMs: NullableMillisecondsSchema,
   endMs: NullableMillisecondsSchema,
 };
@@ -93,37 +115,26 @@ export const DanceSegmentSchema: z.ZodType<DanceSegment> = z
   .strictObject(DanceSegmentShape)
   .superRefine(addSegmentValidationIssue);
 
-function numberedSegmentSchema(number: (typeof SEGMENT_NUMBERS)[number]) {
+function indexedSegmentSchema(index: SegmentIndex) {
   return z
     .strictObject({
       ...DanceSegmentShape,
-      number: z.literal(number),
+      id: z.literal(SEGMENT_IDS[index]),
+      index: z.literal(index),
     })
     .superRefine(addSegmentValidationIssue);
 }
 
 export const DanceSegmentsSchema: z.ZodType<DanceSegments> = z.tuple([
-  numberedSegmentSchema(1),
-  numberedSegmentSchema(2),
-  numberedSegmentSchema(3),
-  numberedSegmentSchema(4),
-  numberedSegmentSchema(5),
-  numberedSegmentSchema(6),
+  indexedSegmentSchema(0),
+  indexedSegmentSchema(1),
+  indexedSegmentSchema(2),
+  indexedSegmentSchema(3),
+  indexedSegmentSchema(4),
+  indexedSegmentSchema(5),
 ]);
 
-const PlaybackRateSchema = z.union(PLAYBACK_RATES.map((rate) => z.literal(rate)));
-
-const RelativePathSchema = z
-  .string()
-  .min(1)
-  .refine(
-    (value) =>
-      !value.startsWith('/') &&
-      !value.startsWith('\\') &&
-      !/^[a-z][a-z\d+.-]*:/i.test(value) &&
-      !value.split(/[\\/]/).includes('..'),
-    { message: 'Expected a safe relative path.' },
-  );
+export const PlaybackRateSchema = z.union(PLAYBACK_RATES.map((rate) => z.literal(rate)));
 
 const IsoDateTimeSchema = z.string().datetime({ offset: true });
 
@@ -133,36 +144,17 @@ const DanceProjectBaseSchema = z.strictObject({
   name: ProjectNameSchema,
   createdAtIso: IsoDateTimeSchema,
   updatedAtIso: IsoDateTimeSchema,
+  audioFileName: z.literal(AUDIO_FILE_NAME),
+  waveformFileName: z.literal(WAVEFORM_FILE_NAME),
   durationMs: z.number().finite().int().positive(),
-  sourceVideoBytes: z.number().finite().int().positive(),
-  audioRelativePath: RelativePathSchema,
-  waveformRelativePath: RelativePathSchema,
-  preferredRate: PlaybackRateSchema,
-  lastSelectedSegment: SegmentNumberSchema.nullable(),
+  sourceDisplayName: z.string().nullable(),
+  sourceSizeBytes: z.number().finite().int().nonnegative().nullable(),
+  selectedRate: PlaybackRateSchema,
   segments: DanceSegmentsSchema,
 });
 
 export const DanceProjectSchema: z.ZodType<DanceProject> = DanceProjectBaseSchema.superRefine(
   (project, context) => {
-    const expectedAudioPath = `${PROJECTS_DIRECTORY_NAME}/${project.id}/${AUDIO_FILE_NAME}`;
-    const expectedWaveformPath = `${PROJECTS_DIRECTORY_NAME}/${project.id}/${WAVEFORM_FILE_NAME}`;
-
-    if (project.audioRelativePath !== expectedAudioPath) {
-      context.addIssue({
-        code: 'custom',
-        path: ['audioRelativePath'],
-        message: 'Project audio path must match its project ID.',
-      });
-    }
-
-    if (project.waveformRelativePath !== expectedWaveformPath) {
-      context.addIssue({
-        code: 'custom',
-        path: ['waveformRelativePath'],
-        message: 'Project waveform path must match its project ID.',
-      });
-    }
-
     project.segments.forEach((segment, index) => {
       if (
         segment.startMs !== null &&
@@ -179,48 +171,18 @@ export const DanceProjectSchema: z.ZodType<DanceProject> = DanceProjectBaseSchem
   },
 );
 
-export const ProjectIndexFileSchema: z.ZodType<ProjectIndexFile> = z
-  .strictObject({
-    schemaVersion: z.literal(PROJECT_SCHEMA_VERSION),
-    projects: z.array(DanceProjectSchema),
-  })
-  .superRefine((index, context) => {
-    const projectIds = new Set<string>();
-    const audioPaths = new Set<string>();
-    const waveformPaths = new Set<string>();
-
-    index.projects.forEach((project, projectIndex) => {
-      const uniqueFields = [
-        ['id', project.id, projectIds],
-        ['audioRelativePath', project.audioRelativePath, audioPaths],
-        ['waveformRelativePath', project.waveformRelativePath, waveformPaths],
-      ] as const;
-
-      uniqueFields.forEach(([field, value, seen]) => {
-        if (seen.has(value)) {
-          context.addIssue({
-            code: 'custom',
-            path: ['projects', projectIndex, field],
-            message: `Each project must have a unique ${field}.`,
-          });
-          return;
-        }
-
-        seen.add(value);
-      });
-    });
-  });
-
-export const WaveformFileSchema: z.ZodType<WaveformFile> = z.strictObject({
+export const StoredWaveformSchema: z.ZodType<StoredWaveform> = z.strictObject({
   schemaVersion: z.literal(WAVEFORM_SCHEMA_VERSION),
-  pointCount: z.literal(WAVEFORM_POINT_COUNT),
   durationMs: z.number().finite().int().positive(),
-  amplitudes: z.array(z.number().finite().min(0).max(1)).length(WAVEFORM_POINT_COUNT),
+  sampleCount: z.literal(WAVEFORM_POINT_COUNT),
+  samples: z.array(z.number().finite().min(0).max(1)).length(WAVEFORM_POINT_COUNT),
 });
+
+/** Temporary naming compatibility while callers migrate to StoredWaveformSchema. */
+export const WaveformFileSchema = StoredWaveformSchema;
 
 export const projectNameSchema = ProjectNameSchema;
 export const danceSegmentSchema = DanceSegmentSchema;
 export const danceSegmentsSchema = DanceSegmentsSchema;
 export const danceProjectSchema = DanceProjectSchema;
-export const projectIndexFileSchema = ProjectIndexFileSchema;
-export const waveformFileSchema = WaveformFileSchema;
+export const waveformFileSchema = StoredWaveformSchema;

@@ -59,3 +59,49 @@ jobs:
 
       - name: Expo Doctor
         run: npm run doctor
+
+      - name: Audit prohibited implementations
+        run: npm run audit
+
+  android-native:
+    name: Android native checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Android project
+        run: npx expo prebuild --platform android --no-install --clean
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x android/gradlew
+
+      - name: Run Kotlin unit tests
+        run: ./android/gradlew testDebugUnitTest
+
+      - name: Verify Media3 versions
+        run: ./android/gradlew verifyMedia3Versions
+
+      - name: Assemble debug APK
+        run: ./android/gradlew assembleDebug
+
+      - name: Compile Android instrumentation tests
+        run: ./android/gradlew assembleDebugAndroidTest

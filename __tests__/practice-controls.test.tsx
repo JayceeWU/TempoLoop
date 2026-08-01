@@ -39,14 +39,14 @@ describe('practice controls', () => {
         durationMs={60_000}
         onSelectSegment={onSelectSegment}
         segments={[
-          { number: 1, startMs: 8_000, endMs: 20_000 },
-          { number: 2, startMs: 20_000, endMs: null },
-          { number: 3, startMs: 30_000, endMs: 30_000 },
-          { number: 4, startMs: null, endMs: null },
-          { number: 5, startMs: null, endMs: null },
-          { number: 6, startMs: null, endMs: null },
+          { id: 'segment-1', index: 0, startMs: 8_000, endMs: 20_000 },
+          { id: 'segment-2', index: 1, startMs: 20_000, endMs: null },
+          { id: 'segment-3', index: 2, startMs: 30_000, endMs: 30_000 },
+          { id: 'segment-4', index: 3, startMs: null, endMs: null },
+          { id: 'segment-5', index: 4, startMs: null, endMs: null },
+          { id: 'segment-6', index: 5, startMs: null, endMs: null },
         ]}
-        selectedSegment={1}
+        selectedSegment={0}
       />,
     );
 
@@ -75,7 +75,7 @@ describe('practice controls', () => {
     await fireEvent.press(incomplete);
     expect(onSelectSegment).not.toHaveBeenCalled();
     await fireEvent.press(configured);
-    expect(onSelectSegment).toHaveBeenCalledWith(1);
+    expect(onSelectSegment).toHaveBeenCalledWith(0);
   });
 
   it('provides a large disabled-aware bottom playback button', async () => {

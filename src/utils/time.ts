@@ -30,22 +30,26 @@ export function formatSegmentTime(milliseconds: number | null): string {
   return milliseconds === null ? '--:--' : formatDuration(milliseconds);
 }
 
-export function formatEditorTime(milliseconds: number | null): string {
+export function formatTimeMs(milliseconds: number | null): string {
   if (milliseconds === null) {
-    return '--:--.-';
+    return '--:--';
+  }
+  if (!Number.isFinite(milliseconds)) {
+    throw new RangeError('Milliseconds must be finite.');
   }
 
-  const { minutes, seconds } = splitWholeSeconds(milliseconds);
-  const tenths =
-    Math.floor(milliseconds / MILLISECONDS_PER_TENTH) %
-    (MILLISECONDS_PER_SECOND / MILLISECONDS_PER_TENTH);
+  const safeMilliseconds = Math.max(0, Math.round(milliseconds));
+  const minutes = Math.floor(safeMilliseconds / (SECONDS_PER_MINUTE * MILLISECONDS_PER_SECOND));
+  const seconds = Math.floor(
+    (safeMilliseconds % (SECONDS_PER_MINUTE * MILLISECONDS_PER_SECOND)) / MILLISECONDS_PER_SECOND,
+  );
+  const tenths = Math.floor((safeMilliseconds % MILLISECONDS_PER_SECOND) / MILLISECONDS_PER_TENTH);
 
-  return `${minutes}:${seconds.toString().padStart(2, '0')}.${tenths}`;
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${tenths}`;
 }
 
-export function roundToNearest100Ms(milliseconds: number): number {
-  assertFiniteNonNegativeMilliseconds(milliseconds);
-  return Math.round(milliseconds / MILLISECONDS_PER_TENTH) * MILLISECONDS_PER_TENTH;
+export function formatEditorTime(milliseconds: number | null): string {
+  return formatTimeMs(milliseconds);
 }
 
 export function clampTimeMs(milliseconds: number, durationMs: number): number {

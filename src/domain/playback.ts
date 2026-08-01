@@ -5,6 +5,24 @@ export const PLAYBACK_RATES = [1, 0.9, 0.8, 0.7] as const;
 
 export type PlaybackRate = (typeof PLAYBACK_RATES)[number];
 
+export type PlaybackMode = 'idle' | 'editor' | 'practice';
+
+export type PlaybackStatus =
+  'idle' | 'loading' | 'ready' | 'playing' | 'paused' | 'ended' | 'error';
+
+export interface PlaybackSnapshot {
+  mode: PlaybackMode;
+  status: PlaybackStatus;
+  projectId: string | null;
+  segmentIndex: number | null;
+  sourcePositionMs: number;
+  sourceDurationMs: number;
+  clipStartMs: number;
+  clipEndMs: number | null;
+  rate: PlaybackRate;
+  commandGeneration: number;
+}
+
 export interface PlaybackRange {
   playFromMs: number;
   stopAtMs: number;

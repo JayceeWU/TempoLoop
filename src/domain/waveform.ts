@@ -3,6 +3,11 @@ export const WAVEFORM_BAR_SLOT_WIDTH = 3;
 
 export type WaveformDownsampleMode = 'maximum' | 'rms';
 
+export interface WaveformPathData {
+  readonly upper: string;
+  readonly lower: string | null;
+}
+
 function assertFiniteNumber(value: number, label: string): void {
   if (!Number.isFinite(value)) {
     throw new RangeError(`${label} must be finite.`);
@@ -100,4 +105,51 @@ export function waveformPositionFromX(
 
   const clampedX = Math.min(measuredWidth, Math.max(0, locationX));
   return clampWaveformPosition((clampedX / measuredWidth) * durationMs, durationMs);
+}
+
+/**
+ * Builds one compact filled path above the center line and, when requested,
+ * one mirrored path below it. The caller chooses how many source points to
+ * pass in, so drawing stays independent from the persisted 2,048-bin shape.
+ */
+export function createWaveformPathData(
+  amplitudes: readonly number[],
+  width: number,
+  height: number,
+  verticalPadding: number,
+  mirrored = true,
+): WaveformPathData {
+  assertFiniteNumber(width, 'Waveform width');
+  assertFiniteNumber(height, 'Waveform height');
+  assertFiniteNumber(verticalPadding, 'Waveform vertical padding');
+  amplitudes.forEach(assertValidAmplitude);
+
+  if (width <= 0 || height <= 0 || verticalPadding < 0 || verticalPadding * 2 >= height) {
+    throw new RangeError('Waveform path geometry is invalid.');
+  }
+
+  if (amplitudes.length === 0) {
+    return { upper: '', lower: mirrored ? '' : null };
+  }
+
+  const centerY = height / 2;
+  const availableHalfHeight = centerY - verticalPadding;
+  const lastIndex = amplitudes.length - 1;
+  const pointX = (index: number): number =>
+    lastIndex === 0 ? width / 2 : (index / lastIndex) * width;
+  const pointList = (direction: -1 | 1): string =>
+    amplitudes
+      .map((amplitude, index) => {
+        const x = pointX(index);
+        const y = centerY + direction * amplitude * availableHalfHeight;
+        return `L${x.toFixed(2)} ${y.toFixed(2)}`;
+      })
+      .join(' ');
+
+  const upper = `M0 ${centerY.toFixed(2)} ${pointList(-1)} L${width.toFixed(2)} ${centerY.toFixed(2)} Z`;
+  const lower = mirrored
+    ? `M0 ${centerY.toFixed(2)} ${pointList(1)} L${width.toFixed(2)} ${centerY.toFixed(2)} Z`
+    : null;
+
+  return { upper, lower };
 }

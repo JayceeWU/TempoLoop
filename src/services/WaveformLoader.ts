@@ -1,7 +1,6 @@
-import type { DanceProject, WaveformFile } from '@/domain/project';
-import { WaveformFileSchema } from '@/domain/validation';
+import type { DanceProject, StoredWaveform } from '@/domain/project';
+import { StoredWaveformSchema } from '@/domain/validation';
 import {
-  PROJECTS_DIRECTORY_NAME,
   PROJECT_WAVEFORM_FILE_NAME,
   type StorageLayout,
   storageLayout,
@@ -21,44 +20,30 @@ export class WaveformLoaderError extends Error {
   }
 }
 
-export type WaveformProjectMetadata = Pick<DanceProject, 'waveformRelativePath' | 'durationMs'>;
-
-function hasCachedWaveformPathShape(relativePath: string): boolean {
-  const parts = relativePath.replaceAll('\\', '/').split('/');
-  return (
-    parts.length === 3 &&
-    parts[0] === PROJECTS_DIRECTORY_NAME &&
-    parts[1] !== undefined &&
-    parts[1].length > 0 &&
-    parts[2] === PROJECT_WAVEFORM_FILE_NAME
-  );
-}
+export type WaveformProjectMetadata = Pick<DanceProject, 'id' | 'waveformFileName' | 'durationMs'>;
 
 /**
- * Reads only TempoLoop's small cached waveform JSON. Audio and video media are
- * never opened or transferred through JavaScript.
+ * Reads only TempoLoop's small cached waveform JSON for the active project.
+ * Audio and source-media bytes never cross this JavaScript boundary.
  */
 export class WaveformLoader {
   constructor(private readonly layout: StorageLayout = storageLayout) {}
 
-  async load(project: WaveformProjectMetadata): Promise<WaveformFile> {
-    let waveformUri: string;
-
-    if (!hasCachedWaveformPathShape(project.waveformRelativePath)) {
+  async load(project: WaveformProjectMetadata): Promise<StoredWaveform> {
+    if (project.waveformFileName !== PROJECT_WAVEFORM_FILE_NAME) {
       throw new WaveformLoaderError(
         'E_WAVEFORM_FILE_INVALID',
-        'The project waveform path is not a cached waveform JSON path.',
+        'The project waveform filename is invalid.',
       );
     }
 
+    let waveformUri: string;
     try {
-      waveformUri = this.layout.resolveDocumentRelativePath(project.waveformRelativePath);
+      waveformUri = this.layout.projectWaveformUri(project.id);
     } catch (error) {
-      throw new WaveformLoaderError(
-        'E_WAVEFORM_FILE_INVALID',
-        'The project waveform path is invalid.',
-        { cause: error },
-      );
+      throw new WaveformLoaderError('E_WAVEFORM_FILE_INVALID', 'The project ID is invalid.', {
+        cause: error,
+      });
     }
 
     if (!this.layout.fileSystem.fileExists(waveformUri)) {
@@ -79,7 +64,7 @@ export class WaveformLoader {
       );
     }
 
-    const parsedWaveform = WaveformFileSchema.safeParse(parsedJson);
+    const parsedWaveform = StoredWaveformSchema.safeParse(parsedJson);
     if (!parsedWaveform.success) {
       throw new WaveformLoaderError(
         'E_WAVEFORM_FILE_INVALID',

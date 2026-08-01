@@ -16,6 +16,7 @@ const MAX_DIAGNOSTIC_COLLECTION_LENGTH = 20;
 const MAX_DIAGNOSTIC_DEPTH = 4;
 const MAX_DIAGNOSTIC_NODE_COUNT = 100;
 const FILE_URI_PATTERN = /file:\/\/\/[^\s"'<>)}\]]+/giu;
+const CONTENT_URI_PATTERN = /content:\/\/[^\s"'<>)}\]]+/giu;
 const WINDOWS_ABSOLUTE_PATH_PATTERN = /\b[A-Z]:\\[^\s"'<>)}\]]+/giu;
 const POSIX_ABSOLUTE_PATH_PATTERN = /(^|\s)\/(?:[^/\s"'<>)}\]]+\/)+[^\s"'<>)}\]]*/gu;
 
@@ -47,6 +48,7 @@ export function redactDiagnosticText(
   }
 
   redacted = redacted
+    .replace(CONTENT_URI_PATTERN, '<content-uri>')
     .replace(FILE_URI_PATTERN, '<local-file>')
     .replace(WINDOWS_ABSOLUTE_PATH_PATTERN, '<absolute-path>')
     .replace(

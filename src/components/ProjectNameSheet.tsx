@@ -1,9 +1,18 @@
-import { useState } from 'react';
-import { KeyboardAvoidingView, Modal, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useMemo, useState } from 'react';
+import {
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AppButton } from '@/components/AppButton';
 import { colors, fontSizes, fontWeights, radii, spacing } from '@/constants/theme';
+import { ProjectNameSchema } from '@/domain/validation';
 
 export interface ProjectNameSheetProps {
   visible: boolean;
@@ -33,6 +42,13 @@ export function ProjectNameSheet({
   onConfirm,
 }: ProjectNameSheetProps) {
   const [name, setName] = useState(initialName);
+  const isNameValid = useMemo(() => ProjectNameSchema.safeParse(name).success, [name]);
+
+  const submit = () => {
+    if (!isBusy && isNameValid) {
+      onConfirm(name);
+    }
+  };
 
   return (
     <Modal
@@ -42,7 +58,10 @@ export function ProjectNameSheet({
       visible={visible}
     >
       <SafeAreaView edges={['top', 'bottom']} style={styles.safeArea}>
-        <KeyboardAvoidingView behavior="padding" style={styles.keyboardView}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'android' ? 'height' : 'padding'}
+          style={styles.keyboardView}
+        >
           <View style={styles.content}>
             <Text accessibilityRole="header" style={styles.title}>
               {title}
@@ -55,8 +74,8 @@ export function ProjectNameSheet({
               autoCapitalize="sentences"
               autoCorrect={false}
               editable={!isBusy}
-              maxLength={80}
               onChangeText={setName}
+              onSubmitEditing={submit}
               returnKeyType="done"
               selectTextOnFocus
               style={[styles.input, validationMessage ? styles.inputInvalid : null]}
@@ -76,10 +95,10 @@ export function ProjectNameSheet({
                 variant="secondary"
               />
               <AppButton
-                disabled={name.trim().length === 0}
+                disabled={!isNameValid}
                 label={confirmLabel}
                 loading={isBusy}
-                onPress={() => onConfirm(name)}
+                onPress={submit}
               />
             </View>
           </View>

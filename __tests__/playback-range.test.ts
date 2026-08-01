@@ -4,7 +4,8 @@ describe('calculatePlaybackRange', () => {
   it('clamps the six-second lead-in to zero', () => {
     expect(
       calculatePlaybackRange({
-        number: 1,
+        id: 'segment-1',
+        index: 0,
         startMs: 3_000,
         endMs: 8_000,
       }),
@@ -14,7 +15,8 @@ describe('calculatePlaybackRange', () => {
   it('starts six source-audio seconds before the segment', () => {
     expect(
       calculatePlaybackRange({
-        number: 1,
+        id: 'segment-1',
+        index: 0,
         startMs: 63_000,
         endMs: 70_000,
       }),
@@ -25,7 +27,8 @@ describe('calculatePlaybackRange', () => {
     PLAYBACK_RATES.forEach(() => {
       expect(
         calculatePlaybackRange({
-          number: 1,
+          id: 'segment-1',
+          index: 0,
           startMs: 20_000,
           endMs: 25_000,
         }),
@@ -36,7 +39,8 @@ describe('calculatePlaybackRange', () => {
   it('rejects an unconfigured segment', () => {
     expect(() =>
       calculatePlaybackRange({
-        number: 1,
+        id: 'segment-1',
+        index: 0,
         startMs: null,
         endMs: null,
       }),

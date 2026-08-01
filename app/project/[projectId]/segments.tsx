@@ -1,7 +1,16 @@
 import { Stack, router, useFocusEffect, useLocalSearchParams, useNavigation } from 'expo-router';
 import { usePreventRemove } from 'expo-router/react-navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  AccessibilityInfo,
+  ActivityIndicator,
+  Alert,
+  findNodeHandle,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AppButton } from '@/components/AppButton';
@@ -10,8 +19,13 @@ import { SegmentTimeRow } from '@/components/SegmentTimeRow';
 import { WaveformScrubber } from '@/components/WaveformScrubber';
 import { COPY } from '@/constants/copy';
 import { colors, fontSizes, fontWeights, spacing } from '@/constants/theme';
-import type { DanceProject, WaveformFile } from '@/domain/project';
-import type { DanceSegments, SegmentNumber } from '@/domain/segment';
+import type { DanceProject, StoredWaveform } from '@/domain/project';
+import {
+  SEGMENT_INDEXES,
+  getSegmentValidationIssue,
+  type DanceSegments,
+  type SegmentIndex,
+} from '@/domain/segment';
 import {
   clearDraftSegment,
   createSegmentDraft,
@@ -20,22 +34,20 @@ import {
   setDraftEndpoint,
   type SegmentEndpoint,
 } from '@/domain/segmentDraft';
+import { useTempoLoopPlayer } from '@/playback/useTempoLoopPlayer';
 import { projectRepository } from '@/repositories/ProjectRepository';
 import { waveformLoader } from '@/services/WaveformLoader';
-import { usePlaybackStore } from '@/stores/usePlaybackStore';
 import { useProjectStore } from '@/stores/useProjectStore';
-import { AppError } from '@/utils/errors';
-import { canAcceptPlaybackToggle } from '@/utils/interaction';
-import { clampTimeMs, formatEditorTime } from '@/utils/time';
+import { formatEditorTime } from '@/utils/time';
 
 type EditorConfirmation = {
-  readonly segmentNumber: SegmentNumber;
+  readonly segmentIndex: SegmentIndex;
   readonly endpoint: SegmentEndpoint;
 };
 
 type WaveformLoadState =
   | { readonly status: 'loading'; readonly waveform: null }
-  | { readonly status: 'ready'; readonly waveform: WaveformFile }
+  | { readonly status: 'ready'; readonly waveform: StoredWaveform }
   | { readonly status: 'failed'; readonly waveform: null };
 
 function firstParam(value: string | string[] | undefined): string | null {
@@ -47,22 +59,24 @@ function firstParam(value: string | string[] | undefined): string | null {
   return first !== undefined && first.length > 0 ? first : null;
 }
 
-function isLoadedPlaybackState(
-  state: ReturnType<typeof usePlaybackStore.getState>['snapshot']['state'],
-): boolean {
+function firstInvalidSegmentIndex(draft: DanceSegments, durationMs: number): SegmentIndex | null {
   return (
-    state === 'ready' ||
-    state === 'playing' ||
-    state === 'paused' ||
-    state === 'seeking' ||
-    state === 'completed'
+    SEGMENT_INDEXES.find((index) => getSegmentValidationIssue(draft[index], durationMs) !== null) ??
+    null
   );
 }
 
-function playbackErrorMessage(error: unknown): string {
-  return error instanceof AppError && error.userMessage !== null
-    ? error.userMessage
-    : COPY.segmentEditor.playbackErrorMessage;
+function isEditorAudioReady(
+  projectId: string,
+  mode: string,
+  status: string,
+  loadedProjectId: string | null,
+): boolean {
+  return (
+    mode === 'editor' &&
+    loadedProjectId === projectId &&
+    (status === 'ready' || status === 'playing' || status === 'paused' || status === 'ended')
+  );
 }
 
 interface SegmentEditorContentProps {
@@ -73,15 +87,16 @@ interface SegmentEditorContentProps {
 
 function SegmentEditorContent({ project, audioUri, cameFromPractice }: SegmentEditorContentProps) {
   const navigation = useNavigation();
+  const player = useTempoLoopPlayer();
+  const playerRef = useRef(player);
+
   const updateSegments = useProjectStore((state) => state.updateSegments);
   const pendingProjectId = useProjectStore((state) => state.pendingProjectId);
-  const snapshot = usePlaybackStore((state) => state.snapshot);
-  const selectedProjectId = usePlaybackStore((state) => state.selectedProjectId);
-  const command = usePlaybackStore((state) => state.command);
 
   const [baseline] = useState<DanceSegments>(() => createSegmentDraft(project.segments));
   const [draft, setDraft] = useState<DanceSegments>(() => createSegmentDraft(project.segments));
   const [confirmation, setConfirmation] = useState<EditorConfirmation | null>(null);
+  const [highlightedInvalidIndex, setHighlightedInvalidIndex] = useState<SegmentIndex | null>(null);
   const [waveformRetry, setWaveformRetry] = useState(0);
   const [waveformState, setWaveformState] = useState<WaveformLoadState>({
     status: 'loading',
@@ -90,37 +105,63 @@ function SegmentEditorContent({ project, audioUri, cameFromPractice }: SegmentEd
   const [isSaving, setIsSaving] = useState(false);
   const [isExiting, setIsExiting] = useState(false);
 
-  const focusTokenRef = useRef(0);
-  const isFocusedRef = useRef(false);
-  const isUnmountingRef = useRef(false);
-  const keepLoadedOnExitRef = useRef(cameFromPractice);
-  const exitWasPausedRef = useRef(false);
-  const exitInFlightRef = useRef(false);
+  const scrollViewRef = useRef<ScrollView | null>(null);
+  const rowRefs = useRef<(Text | null)[]>([]);
+  const rowOffsets = useRef<number[]>([]);
   const allowRemovalRef = useRef(false);
   const discardAlertOpenRef = useRef(false);
+  const exitInFlightRef = useRef(false);
   const savingRef = useRef(false);
-  const endpointSetInFlightRef = useRef(false);
-  const lastPlaybackToggleAtRef = useRef<number | null>(null);
+  const routeFocusedRef = useRef(false);
+  const scrubWasPlayingRef = useRef(false);
 
   const isDirty = !segmentDraftsEqual(draft, baseline);
   const draftIsSavable = isSegmentDraftSavable(draft, project.durationMs);
-  const commandPending = command.status === 'pending';
   const projectPending = pendingProjectId === project.id;
-  const audioIsReady =
-    selectedProjectId === project.id &&
-    isLoadedPlaybackState(snapshot.state) &&
-    snapshot.durationMs === project.durationMs;
-  const interactionDisabled =
-    commandPending || projectPending || isSaving || isExiting || !audioIsReady;
+  const audioIsReady = isEditorAudioReady(
+    project.id,
+    player.snapshot.mode,
+    player.snapshot.status,
+    player.snapshot.projectId,
+  );
+  const interactionDisabled = isSaving || isExiting || projectPending || !audioIsReady;
+
+  useEffect(() => {
+    playerRef.current = player;
+  }, [player]);
+
+  const enterEditor = useCallback(() => {
+    return playerRef.current.enterEditor({
+      projectId: project.id,
+      audioUri,
+      durationMs: project.durationMs,
+    });
+  }, [audioUri, project.durationMs, project.id]);
+
+  const showPlaybackError = useCallback(() => {
+    if (routeFocusedRef.current) {
+      Alert.alert(COPY.segmentEditor.playbackErrorTitle, COPY.segmentEditor.playbackErrorMessage);
+    }
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      routeFocusedRef.current = true;
+      void enterEditor().catch(showPlaybackError);
+
+      return () => {
+        routeFocusedRef.current = false;
+        scrubWasPlayingRef.current = false;
+        playerRef.current.pause();
+      };
+    }, [enterEditor, showPlaybackError]),
+  );
 
   useEffect(() => {
     let isCurrent = true;
 
     void waveformLoader
-      .load({
-        durationMs: project.durationMs,
-        waveformRelativePath: project.waveformRelativePath,
-      })
+      .load(project)
       .then((waveform) => {
         if (isCurrent) {
           setWaveformState({ status: 'ready', waveform });
@@ -135,160 +176,38 @@ function SegmentEditorContent({ project, audioUri, cameFromPractice }: SegmentEd
     return () => {
       isCurrent = false;
     };
-  }, [project.durationMs, project.waveformRelativePath, waveformRetry]);
+  }, [project, waveformRetry]);
 
-  const tokenIsCurrent = useCallback(
-    (token: number) => isFocusedRef.current && focusTokenRef.current === token,
-    [],
-  );
+  const focusInvalidSegment = useCallback((index: SegmentIndex) => {
+    setHighlightedInvalidIndex(index);
+    const offset = rowOffsets.current[index];
+    if (offset !== undefined) {
+      scrollViewRef.current?.scrollTo({ y: Math.max(0, offset - spacing.md), animated: true });
+    }
 
-  const showPlaybackError = useCallback(
-    (error: unknown, token: number) => {
-      if (error instanceof AppError && error.isCancellation) {
-        return;
-      }
+    const node = findNodeHandle(rowRefs.current[index]);
+    if (node !== null) {
+      AccessibilityInfo.setAccessibilityFocus(node);
+    }
+  }, []);
 
-      if (tokenIsCurrent(token)) {
-        Alert.alert(COPY.segmentEditor.playbackErrorTitle, playbackErrorMessage(error));
-      }
-    },
-    [tokenIsCurrent],
-  );
-
-  const prepareEditorPlayback = useCallback(
-    async (token: number): Promise<void> => {
-      let playback = usePlaybackStore.getState();
-      const canReuseLoadedAudio =
-        playback.selectedProjectId === project.id &&
-        isLoadedPlaybackState(playback.snapshot.state) &&
-        playback.snapshot.durationMs === project.durationMs;
-
-      if (
-        isLoadedPlaybackState(playback.snapshot.state) &&
-        (!canReuseLoadedAudio ||
-          playback.snapshot.state === 'playing' ||
-          playback.snapshot.state === 'seeking')
-      ) {
-        await playback.pause();
-        if (!tokenIsCurrent(token)) {
-          return;
-        }
-      }
-
-      playback = usePlaybackStore.getState();
-      playback.setSelection({
-        projectId: project.id,
-        segmentNumber: canReuseLoadedAudio ? playback.selectedSegment : project.lastSelectedSegment,
-        rate: 1,
-      });
-
-      if (!canReuseLoadedAudio) {
-        await usePlaybackStore.getState().loadAudio(audioUri);
-        if (!tokenIsCurrent(token)) {
-          return;
-        }
-      }
-
-      playback = usePlaybackStore.getState();
-      if (
-        playback.snapshot.activeRangeStartMs !== null ||
-        playback.snapshot.activeRangeEndMs !== null
-      ) {
-        await playback.stopAndSeek(
-          clampTimeMs(playback.snapshot.currentTimeMs, project.durationMs),
-        );
-        if (!tokenIsCurrent(token)) {
-          return;
-        }
-      }
-
-      playback = usePlaybackStore.getState();
-      if (playback.snapshot.rate !== 1) {
-        await playback.setRate(1);
-      }
-    },
-    [audioUri, project.durationMs, project.id, project.lastSelectedSegment, tokenIsCurrent],
-  );
-
-  useEffect(() => {
-    isUnmountingRef.current = false;
-
-    return () => {
-      isUnmountingRef.current = true;
-      isFocusedRef.current = false;
-      focusTokenRef.current += 1;
-
-      const playback = usePlaybackStore.getState();
-      if (!keepLoadedOnExitRef.current && playback.selectedProjectId === project.id) {
-        void playback.unload().catch(() => {
-          // A later project load owns recovery from a best-effort route cleanup.
-        });
-      }
-    };
-  }, [project.id]);
-
-  useFocusEffect(
-    useCallback(() => {
-      const token = focusTokenRef.current + 1;
-      focusTokenRef.current = token;
-      isFocusedRef.current = true;
-      exitWasPausedRef.current = false;
-
-      void prepareEditorPlayback(token).catch((error: unknown) => {
-        showPlaybackError(error, token);
-      });
-
-      return () => {
-        isFocusedRef.current = false;
-        focusTokenRef.current += 1;
-
-        if (isUnmountingRef.current || exitWasPausedRef.current) {
-          return;
-        }
-
-        const playback = usePlaybackStore.getState();
-        if (
-          playback.selectedProjectId === project.id &&
-          isLoadedPlaybackState(playback.snapshot.state)
-        ) {
-          void playback.pause().catch(() => {
-            // Blur cleanup is best effort and never auto-resumes.
-          });
-        }
-      };
-    }, [prepareEditorPlayback, project.id, showPlaybackError]),
-  );
-
-  const finishPlaybackBeforeExit = useCallback(
-    (continueNavigation: () => void) => {
+  const finishRemoval = useCallback(
+    (continueNavigation: () => void, invalidatePreparedPlayback: boolean) => {
       if (exitInFlightRef.current) {
         return;
       }
 
       exitInFlightRef.current = true;
       setIsExiting(true);
-      isFocusedRef.current = false;
-      focusTokenRef.current += 1;
-      const playback = usePlaybackStore.getState();
-      let playbackExitOperation: Promise<unknown> = Promise.resolve();
-      if (playback.selectedProjectId === project.id) {
-        playbackExitOperation = keepLoadedOnExitRef.current
-          ? isLoadedPlaybackState(playback.snapshot.state)
-            ? playback.pause()
-            : Promise.resolve()
-          : playback.unload();
+      scrubWasPlayingRef.current = false;
+      playerRef.current.pause();
+      if (invalidatePreparedPlayback) {
+        playerRef.current.deactivate();
       }
-
-      void playbackExitOperation
-        .catch(() => {
-          // Leaving must not trap the user if native playback has already failed.
-        })
-        .then(() => {
-          exitWasPausedRef.current = true;
-          continueNavigation();
-        });
+      allowRemovalRef.current = true;
+      continueNavigation();
     },
-    [project.id],
+    [],
   );
 
   usePreventRemove(true, ({ data }) => {
@@ -297,14 +216,12 @@ function SegmentEditorContent({ project, audioUri, cameFromPractice }: SegmentEd
       return;
     }
 
-    if (savingRef.current) {
+    if (savingRef.current || exitInFlightRef.current) {
       return;
     }
 
     if (!isDirty) {
-      finishPlaybackBeforeExit(() => {
-        navigation.dispatch(data.action);
-      });
+      finishRemoval(() => navigation.dispatch(data.action), false);
       return;
     }
 
@@ -314,7 +231,6 @@ function SegmentEditorContent({ project, audioUri, cameFromPractice }: SegmentEd
 
     discardAlertOpenRef.current = true;
     const invalidDraft = !isSegmentDraftSavable(draft, project.durationMs);
-
     Alert.alert(
       invalidDraft ? COPY.segmentEditor.invalidDiscardTitle : COPY.segmentEditor.discardTitle,
       invalidDraft ? COPY.segmentEditor.invalidDiscardMessage : COPY.segmentEditor.discardMessage,
@@ -331,210 +247,155 @@ function SegmentEditorContent({ project, audioUri, cameFromPractice }: SegmentEd
           style: 'destructive',
           onPress: () => {
             discardAlertOpenRef.current = false;
-            finishPlaybackBeforeExit(() => {
-              navigation.dispatch(data.action);
-            });
+            finishRemoval(() => navigation.dispatch(data.action), true);
           },
         },
       ],
+      {
+        cancelable: true,
+        onDismiss: () => {
+          discardAlertOpenRef.current = false;
+        },
+      },
     );
   });
 
   const handleSetEndpoint = useCallback(
-    (segmentNumber: SegmentNumber, endpoint: SegmentEndpoint) => {
-      const playback = usePlaybackStore.getState();
-      if (
-        exitInFlightRef.current ||
-        savingRef.current ||
-        endpointSetInFlightRef.current ||
-        playback.command.status === 'pending' ||
-        playback.selectedProjectId !== project.id ||
-        !isLoadedPlaybackState(playback.snapshot.state)
-      ) {
+    (segmentIndex: SegmentIndex, endpoint: SegmentEndpoint) => {
+      if (interactionDisabled) {
         return;
       }
 
-      endpointSetInFlightRef.current = true;
-      const token = focusTokenRef.current;
-
-      void playback
-        .refreshSnapshot()
-        .then((latestSnapshot) => {
-          const latestPlayback = usePlaybackStore.getState();
-          if (
-            !tokenIsCurrent(token) ||
-            exitInFlightRef.current ||
-            savingRef.current ||
-            latestPlayback.selectedProjectId !== project.id ||
-            latestSnapshot.durationMs !== project.durationMs ||
-            !isLoadedPlaybackState(latestSnapshot.state)
-          ) {
-            return;
-          }
-
-          setDraft((current) =>
-            setDraftEndpoint(
-              current,
-              segmentNumber,
-              endpoint,
-              latestSnapshot.currentTimeMs,
-              project.durationMs,
-            ),
-          );
-          setConfirmation({ segmentNumber, endpoint });
-        })
-        .catch((error: unknown) => {
-          showPlaybackError(error, token);
-        })
-        .finally(() => {
-          endpointSetInFlightRef.current = false;
-        });
+      const currentTimeMs = playerRef.current.getCurrentPositionMs();
+      setDraft((current) => {
+        const next = setDraftEndpoint(
+          current,
+          segmentIndex,
+          endpoint,
+          currentTimeMs,
+          project.durationMs,
+        );
+        setHighlightedInvalidIndex(firstInvalidSegmentIndex(next, project.durationMs));
+        return next;
+      });
+      setConfirmation({ segmentIndex, endpoint });
     },
-    [project.durationMs, project.id, showPlaybackError, tokenIsCurrent],
+    [interactionDisabled, project.durationMs],
   );
 
-  const handleClearSegment = useCallback((segmentNumber: SegmentNumber) => {
-    if (exitInFlightRef.current || savingRef.current) {
-      return;
-    }
+  const handleClearSegment = useCallback(
+    (segmentIndex: SegmentIndex) => {
+      if (isSaving || isExiting || projectPending) {
+        return;
+      }
 
-    setDraft((current) => clearDraftSegment(current, segmentNumber));
+      setDraft((current) => {
+        const next = clearDraftSegment(current, segmentIndex);
+        setHighlightedInvalidIndex(firstInvalidSegmentIndex(next, project.durationMs));
+        return next;
+      });
+      setConfirmation(null);
+    },
+    [isExiting, isSaving, project.durationMs, projectPending],
+  );
+
+  const handleScrubStart = useCallback(() => {
+    const wasPlaying = playerRef.current.snapshot.status === 'playing';
+    scrubWasPlayingRef.current = wasPlaying;
     setConfirmation(null);
+    if (wasPlaying) {
+      playerRef.current.pause();
+    }
   }, []);
 
-  const handleSeek = useCallback(
+  const handleSeekPreview = useCallback(
     (positionMs: number) => {
-      const playback = usePlaybackStore.getState();
-      if (
-        exitInFlightRef.current ||
-        savingRef.current ||
-        playback.command.status === 'pending' ||
-        playback.selectedProjectId !== project.id ||
-        !isLoadedPlaybackState(playback.snapshot.state)
-      ) {
-        return;
-      }
-
-      setConfirmation(null);
-      const token = focusTokenRef.current;
-      void playback.seek(positionMs).catch((error: unknown) => {
-        showPlaybackError(error, token);
-      });
+      void playerRef.current.seekEditor(positionMs, false).catch(showPlaybackError);
     },
-    [project.id, showPlaybackError],
+    [showPlaybackError],
   );
 
+  const handleSeekRequested = useCallback(
+    (positionMs: number) => {
+      const resumeAfterSeek = scrubWasPlayingRef.current;
+      scrubWasPlayingRef.current = false;
+      void playerRef.current.seekEditor(positionMs, resumeAfterSeek).catch(showPlaybackError);
+    },
+    [showPlaybackError],
+  );
+
+  const handleScrubCancel = useCallback(() => {
+    const shouldResume = scrubWasPlayingRef.current;
+    scrubWasPlayingRef.current = false;
+    if (shouldResume) {
+      void playerRef.current.playEditor().catch(showPlaybackError);
+    }
+  }, [showPlaybackError]);
+
   const handleTogglePlayback = useCallback(() => {
-    const playback = usePlaybackStore.getState();
-    if (
-      exitInFlightRef.current ||
-      savingRef.current ||
-      playback.command.status === 'pending' ||
-      playback.selectedProjectId !== project.id ||
-      !isLoadedPlaybackState(playback.snapshot.state)
-    ) {
-      return;
-    }
-
     setConfirmation(null);
-    const token = focusTokenRef.current;
-    const acceptedAtMs = Date.now();
-    if (!canAcceptPlaybackToggle(lastPlaybackToggleAtRef.current, acceptedAtMs)) {
+    if (playerRef.current.snapshot.status === 'playing') {
+      playerRef.current.pause();
       return;
     }
 
-    const operation =
-      playback.snapshot.state === 'playing'
-        ? playback.pause()
-        : playback.playFrom(
-            playback.snapshot.currentTimeMs >= project.durationMs
-              ? 0
-              : playback.snapshot.currentTimeMs,
-            1,
-          );
-    lastPlaybackToggleAtRef.current = acceptedAtMs;
-
-    void operation.catch((error: unknown) => {
-      showPlaybackError(error, token);
-    });
-  }, [project.durationMs, project.id, showPlaybackError]);
+    void playerRef.current.playEditor().catch(showPlaybackError);
+  }, [showPlaybackError]);
 
   const handleSave = useCallback(() => {
-    if (exitInFlightRef.current || savingRef.current || pendingProjectId === project.id) {
+    if (savingRef.current || exitInFlightRef.current || projectPending) {
       return;
     }
 
     const frozenDraft = createSegmentDraft(draft);
-    if (!isSegmentDraftSavable(frozenDraft, project.durationMs)) {
+    const invalidIndex = firstInvalidSegmentIndex(frozenDraft, project.durationMs);
+    if (invalidIndex !== null || !isSegmentDraftSavable(frozenDraft, project.durationMs)) {
+      focusInvalidSegment(invalidIndex ?? 0);
       return;
     }
 
     savingRef.current = true;
     setIsSaving(true);
     setConfirmation(null);
-    const token = focusTokenRef.current;
+    playerRef.current.pause();
 
-    void (async () => {
-      const playback = usePlaybackStore.getState();
-      if (
-        playback.selectedProjectId === project.id &&
-        isLoadedPlaybackState(playback.snapshot.state)
-      ) {
-        await playback.pause();
-      }
-
-      if (!tokenIsCurrent(token) || !isSegmentDraftSavable(frozenDraft, project.durationMs)) {
-        return;
-      }
-
-      await updateSegments(project.id, frozenDraft);
-      if (!tokenIsCurrent(token)) {
-        return;
-      }
-
-      exitWasPausedRef.current = true;
-      allowRemovalRef.current = true;
-      keepLoadedOnExitRef.current = true;
-      if (cameFromPractice) {
-        router.back();
-      } else {
-        router.replace({
-          pathname: '/project/[projectId]',
-          params: { projectId: project.id },
-        });
-      }
-    })()
+    void updateSegments(project.id, frozenDraft)
+      .then(() => {
+        playerRef.current.deactivate();
+        allowRemovalRef.current = true;
+        if (cameFromPractice) {
+          router.back();
+        } else {
+          router.replace({
+            pathname: '/project/[projectId]',
+            params: { projectId: project.id },
+          });
+        }
+      })
       .catch(() => {
-        if (tokenIsCurrent(token)) {
+        if (routeFocusedRef.current) {
           Alert.alert(COPY.segmentEditor.saveErrorTitle, COPY.segmentEditor.saveErrorMessage);
         }
       })
       .finally(() => {
         savingRef.current = false;
-        if (tokenIsCurrent(token)) {
+        if (routeFocusedRef.current) {
           setIsSaving(false);
         }
       });
   }, [
     cameFromPractice,
     draft,
-    pendingProjectId,
+    focusInvalidSegment,
     project.durationMs,
     project.id,
-    tokenIsCurrent,
+    projectPending,
     updateSegments,
   ]);
 
   const handleRetryAudio = useCallback(() => {
-    if (exitInFlightRef.current || command.status === 'pending') {
-      return;
-    }
-
-    const token = focusTokenRef.current;
-    void prepareEditorPlayback(token).catch((error: unknown) => {
-      showPlaybackError(error, token);
-    });
-  }, [command.status, prepareEditorPlayback, showPlaybackError]);
+    void enterEditor().catch(showPlaybackError);
+  }, [enterEditor, showPlaybackError]);
 
   const handleRetryWaveform = useCallback(() => {
     setWaveformState({ status: 'loading', waveform: null });
@@ -556,7 +417,7 @@ function SegmentEditorContent({ project, audioUri, cameFromPractice }: SegmentEd
           {COPY.segmentEditor.title}
         </Text>
         <AppButton
-          disabled={!draftIsSavable || commandPending || projectPending || isExiting}
+          disabled={!draftIsSavable || projectPending || isExiting}
           label={COPY.common.save}
           loading={isSaving}
           onPress={handleSave}
@@ -565,12 +426,18 @@ function SegmentEditorContent({ project, audioUri, cameFromPractice }: SegmentEd
         />
       </View>
 
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        ref={scrollViewRef}
+        showsVerticalScrollIndicator={false}
+      >
         <View style={styles.waveformSection}>
-          <Text style={styles.projectName}>{project.name}</Text>
+          <Text numberOfLines={1} style={styles.projectName}>
+            {project.name}
+          </Text>
           <Text accessibilityLiveRegion="polite" style={styles.timeDisplay}>
             {COPY.segmentEditor.currentAndTotal(
-              formatEditorTime(audioIsReady ? snapshot.currentTimeMs : 0),
+              formatEditorTime(audioIsReady ? player.snapshot.sourcePositionMs : 0),
               formatEditorTime(project.durationMs),
             )}
           </Text>
@@ -598,17 +465,22 @@ function SegmentEditorContent({ project, audioUri, cameFromPractice }: SegmentEd
 
           {waveformState.status === 'ready' ? (
             <WaveformScrubber
-              amplitudes={waveformState.waveform.amplitudes}
-              currentTimeMs={audioIsReady ? snapshot.currentTimeMs : 0}
+              amplitudes={waveformState.waveform.samples}
+              currentTimeMs={audioIsReady ? player.snapshot.sourcePositionMs : 0}
               disabled={interactionDisabled}
               durationMs={project.durationMs}
-              onSeekRequested={handleSeek}
+              onScrubCancel={handleScrubCancel}
+              onScrubStart={handleScrubStart}
+              onSeekPreview={handleSeekPreview}
+              onSeekRequested={handleSeekRequested}
             />
           ) : null}
 
-          {!audioIsReady && !commandPending ? (
+          {player.snapshot.status === 'error' ? (
             <View style={styles.waveformStatus}>
-              <Text style={styles.statusText}>{COPY.segmentEditor.audioUnavailable}</Text>
+              <Text accessibilityRole="alert" style={styles.statusText}>
+                {COPY.segmentEditor.audioUnavailable}
+              </Text>
               <AppButton label={COPY.common.retry} onPress={handleRetryAudio} variant="secondary" />
             </View>
           ) : null}
@@ -617,9 +489,11 @@ function SegmentEditorContent({ project, audioUri, cameFromPractice }: SegmentEd
             disabled={interactionDisabled}
             fullWidth
             label={
-              snapshot.state === 'playing' ? COPY.segmentEditor.pause : COPY.segmentEditor.play
+              player.snapshot.status === 'playing'
+                ? COPY.segmentEditor.pause
+                : COPY.segmentEditor.play
             }
-            loading={commandPending && (command.kind === 'play-from' || command.kind === 'pause')}
+            loading={player.snapshot.status === 'loading'}
             onPress={handleTogglePlayback}
             size="large"
           />
@@ -627,18 +501,28 @@ function SegmentEditorContent({ project, audioUri, cameFromPractice }: SegmentEd
 
         <View style={styles.segmentList}>
           {draft.map((segment) => (
-            <SegmentTimeRow
-              confirmedEndpoint={
-                confirmation?.segmentNumber === segment.number ? confirmation.endpoint : null
-              }
-              disabled={commandPending || projectPending || isSaving || isExiting}
-              durationMs={project.durationMs}
-              key={segment.number}
-              onClear={() => handleClearSegment(segment.number)}
-              onSet={(endpoint) => handleSetEndpoint(segment.number, endpoint)}
-              segment={segment}
-              setDisabled={!audioIsReady}
-            />
+            <View
+              key={segment.id}
+              onLayout={(event) => {
+                rowOffsets.current[segment.index] = event.nativeEvent.layout.y;
+              }}
+            >
+              <SegmentTimeRow
+                confirmedEndpoint={
+                  confirmation?.segmentIndex === segment.index ? confirmation.endpoint : null
+                }
+                disabled={isSaving || isExiting || projectPending}
+                durationMs={project.durationMs}
+                highlighted={highlightedInvalidIndex === segment.index}
+                onClear={() => handleClearSegment(segment.index)}
+                onSet={(endpoint) => handleSetEndpoint(segment.index, endpoint)}
+                ref={(node) => {
+                  rowRefs.current[segment.index] = node;
+                }}
+                segment={segment}
+                setDisabled={!audioIsReady}
+              />
+            </View>
           ))}
         </View>
       </ScrollView>
@@ -685,7 +569,7 @@ export default function SegmentEditorScreen() {
 
     initializationRequestedRef.current = true;
     void initialize().catch(() => {
-      // Store state renders the recoverable loading failure.
+      // Store state renders the recoverable initialization error.
     });
   }, [initialize]);
 
@@ -760,32 +644,33 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flex: 1,
     justifyContent: 'center',
-    paddingHorizontal: spacing.lg,
+    padding: spacing.lg,
   },
   header: {
     alignItems: 'center',
+    borderBottomColor: colors.border,
+    borderBottomWidth: StyleSheet.hairlineWidth,
     flexDirection: 'row',
-    minHeight: 56,
-    paddingHorizontal: spacing.sm,
+    minHeight: 60,
+    paddingHorizontal: spacing.xs,
   },
   headerAction: {
-    minWidth: 76,
+    minWidth: 80,
   },
   title: {
     color: colors.text,
     flex: 1,
     fontSize: fontSizes.title,
-    fontWeight: fontWeights.bold,
-    paddingHorizontal: spacing.xs,
+    fontWeight: fontWeights.semibold,
     textAlign: 'center',
   },
   content: {
-    gap: spacing.xl,
+    gap: spacing.lg,
+    padding: spacing.md,
     paddingBottom: spacing.xxl,
-    paddingHorizontal: spacing.lg,
   },
   waveformSection: {
-    gap: spacing.md,
+    gap: spacing.sm,
   },
   projectName: {
     color: colors.text,
@@ -795,9 +680,9 @@ const styles = StyleSheet.create({
   },
   timeDisplay: {
     color: colors.text,
-    fontSize: fontSizes.display,
+    fontSize: fontSizes.title,
     fontVariant: ['tabular-nums'],
-    fontWeight: fontWeights.bold,
+    fontWeight: fontWeights.semibold,
     textAlign: 'center',
   },
   rateLabel: {
@@ -808,12 +693,12 @@ const styles = StyleSheet.create({
   waveformStatus: {
     alignItems: 'center',
     gap: spacing.sm,
-    minHeight: 112,
     justifyContent: 'center',
+    minHeight: 112,
   },
   statusText: {
     color: colors.textMuted,
-    fontSize: fontSizes.caption,
+    fontSize: fontSizes.body,
     textAlign: 'center',
   },
   segmentList: {

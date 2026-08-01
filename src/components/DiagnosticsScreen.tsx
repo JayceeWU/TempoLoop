@@ -5,6 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { AppButton } from '@/components/AppButton';
 import { COPY } from '@/constants/copy';
 import { colors, fontSizes, fontWeights, radii, spacing } from '@/constants/theme';
+import type { PlaybackSnapshot } from '@/domain/playback';
 import {
   diagnosticsService,
   type DiagnosticsService,
@@ -15,6 +16,7 @@ import { formatDuration } from '@/utils/time';
 
 export interface DiagnosticsScreenProps {
   readonly service?: DiagnosticsService;
+  readonly playbackSnapshot?: PlaybackSnapshot;
   readonly onClose: () => void;
 }
 
@@ -58,6 +60,10 @@ function optional(value: string | null): string {
   return value ?? COPY.diagnostics.none;
 }
 
+function progressValue(value: number | null): string {
+  return value === null ? COPY.diagnostics.none : COPY.diagnostics.progressValue(value);
+}
+
 function timeValue(milliseconds: number): string {
   return COPY.diagnostics.timeValue(formatDuration(milliseconds), milliseconds);
 }
@@ -72,6 +78,7 @@ function rangeValue(startMs: number | null, endMs: number | null): string {
 
 export function DiagnosticsScreen({
   service = diagnosticsService,
+  playbackSnapshot,
   onClose,
 }: DiagnosticsScreenProps) {
   const [snapshot, setSnapshot] = useState<DiagnosticsSnapshot | null>(null);
@@ -79,6 +86,11 @@ export function DiagnosticsScreen({
   const [loadFailed, setLoadFailed] = useState(false);
   const isMountedRef = useRef(false);
   const collectionGenerationRef = useRef(0);
+  const playbackSnapshotRef = useRef(playbackSnapshot);
+
+  useEffect(() => {
+    playbackSnapshotRef.current = playbackSnapshot;
+  }, [playbackSnapshot]);
 
   const refresh = useCallback(() => {
     if (!isMountedRef.current) {
@@ -90,7 +102,7 @@ export function DiagnosticsScreen({
     setIsLoading(true);
     setLoadFailed(false);
     void service
-      .collect()
+      .collect(playbackSnapshotRef.current)
       .then((collectedSnapshot) => {
         if (isMountedRef.current && collectionGenerationRef.current === generation) {
           setSnapshot(collectedSnapshot);
@@ -114,7 +126,7 @@ export function DiagnosticsScreen({
     const generation = collectionGenerationRef.current + 1;
     collectionGenerationRef.current = generation;
     void service
-      .collect()
+      .collect(playbackSnapshotRef.current)
       .then((collectedSnapshot) => {
         if (isMountedRef.current && collectionGenerationRef.current === generation) {
           setSnapshot(collectedSnapshot);
@@ -156,7 +168,7 @@ export function DiagnosticsScreen({
         ? current
         : {
             ...current,
-            native: { ...current.native, lastErrorCode: null },
+            media: { ...current.media, lastErrorCode: null },
             import: { ...current.import, lastErrorCode: null },
             logEntries: [],
           },
@@ -189,46 +201,42 @@ export function DiagnosticsScreen({
         </View>
       ) : snapshot === null ? null : (
         <ScrollView contentContainerStyle={styles.content}>
-          <DiagnosticSection title={COPY.diagnostics.nativeSection}>
+          <DiagnosticSection title={COPY.diagnostics.mediaSection}>
             <DiagnosticRow
-              label={COPY.diagnostics.nativeAvailable}
-              value={yesNo(snapshot.native.available)}
+              label={COPY.diagnostics.mediaModuleName}
+              value={snapshot.media.moduleName}
             />
             <DiagnosticRow
-              label={COPY.diagnostics.nativeApiVersion}
-              value={
-                snapshot.native.apiVersion === null
-                  ? COPY.diagnostics.unavailable
-                  : snapshot.native.apiVersion.toString()
-              }
+              label={COPY.diagnostics.mediaAvailable}
+              value={yesNo(snapshot.media.available)}
             />
             <DiagnosticRow
-              label={COPY.diagnostics.lastNativeError}
-              value={optional(snapshot.native.lastErrorCode)}
+              label={COPY.diagnostics.mediaContractVersion}
+              value={COPY.diagnostics.schemaValue(snapshot.media.contractVersion)}
+            />
+            <DiagnosticRow
+              label={COPY.diagnostics.lastMediaError}
+              value={optional(snapshot.media.lastErrorCode)}
             />
           </DiagnosticSection>
 
           <DiagnosticSection title={COPY.diagnostics.playbackSection}>
-            <DiagnosticRow label={COPY.diagnostics.playbackState} value={snapshot.playback.state} />
+            <DiagnosticRow label={COPY.diagnostics.playbackMode} value={snapshot.playback.mode} />
             <DiagnosticRow
-              label={COPY.diagnostics.loadedFile}
-              value={optional(snapshot.playback.loadedFileUri)}
+              label={COPY.diagnostics.playbackStatus}
+              value={snapshot.playback.status}
             />
             <DiagnosticRow
-              label={COPY.diagnostics.selectedProject}
-              value={optional(snapshot.playback.selectedProjectId)}
+              label={COPY.diagnostics.sourceLoaded}
+              value={yesNo(snapshot.playback.sourceLoaded)}
             />
             <DiagnosticRow
               label={COPY.diagnostics.selectedSegment}
               value={
-                snapshot.playback.selectedSegment === null
+                snapshot.playback.segmentIndex === null
                   ? COPY.diagnostics.none
-                  : COPY.diagnostics.segmentValue(snapshot.playback.selectedSegment)
+                  : COPY.diagnostics.segmentValue(snapshot.playback.segmentIndex + 1)
               }
-            />
-            <DiagnosticRow
-              label={COPY.diagnostics.selectedRate}
-              value={COPY.diagnostics.rateValue(snapshot.playback.selectedRate)}
             />
             <DiagnosticRow
               label={COPY.diagnostics.currentTime}
@@ -249,6 +257,10 @@ export function DiagnosticsScreen({
                 snapshot.playback.activeRangeEndMs,
               )}
             />
+            <DiagnosticRow
+              label={COPY.diagnostics.commandGeneration}
+              value={snapshot.playback.commandGeneration.toString()}
+            />
           </DiagnosticSection>
 
           <DiagnosticSection title={COPY.diagnostics.storageSection}>
@@ -260,6 +272,7 @@ export function DiagnosticsScreen({
                   : formatBinaryMegabytes(snapshot.storage.availableDiskBytes)
               }
             />
+            <DiagnosticRow label={COPY.diagnostics.storageRoot} value={snapshot.storage.rootPath} />
           </DiagnosticSection>
 
           <DiagnosticSection title={COPY.diagnostics.repositorySection}>
@@ -280,8 +293,20 @@ export function DiagnosticsScreen({
               value={snapshot.repository.projectCount.toString()}
             />
             <DiagnosticRow
+              label={COPY.diagnostics.readyProjectCount}
+              value={snapshot.repository.readyProjectCount.toString()}
+            />
+            <DiagnosticRow
+              label={COPY.diagnostics.repairProjectCount}
+              value={snapshot.repository.repairProjectCount.toString()}
+            />
+            <DiagnosticRow
+              label={COPY.diagnostics.corruptProjectCount}
+              value={snapshot.repository.corruptProjectCount.toString()}
+            />
+            <DiagnosticRow
               label={COPY.diagnostics.repositoryLastError}
-              value={optional(snapshot.repository.lastError)}
+              value={optional(snapshot.repository.lastErrorCode)}
             />
             <DiagnosticRow
               label={COPY.diagnostics.recoveryCodes}
@@ -295,8 +320,28 @@ export function DiagnosticsScreen({
 
           <DiagnosticSection title={COPY.diagnostics.importSection}>
             <DiagnosticRow
-              label={COPY.diagnostics.importActive}
-              value={yesNo(snapshot.import.active)}
+              label={COPY.diagnostics.importStoreStatus}
+              value={snapshot.import.storeStatus}
+            />
+            <DiagnosticRow
+              label={COPY.diagnostics.importCoordinatorActive}
+              value={yesNo(snapshot.import.coordinatorActive)}
+            />
+            <DiagnosticRow
+              label={COPY.diagnostics.importStage}
+              value={optional(snapshot.import.stage)}
+            />
+            <DiagnosticRow
+              label={COPY.diagnostics.importStageProgress}
+              value={progressValue(snapshot.import.stageProgress)}
+            />
+            <DiagnosticRow
+              label={COPY.diagnostics.importOverallProgress}
+              value={progressValue(snapshot.import.overallProgress)}
+            />
+            <DiagnosticRow
+              label={COPY.diagnostics.importCancelRequested}
+              value={yesNo(snapshot.import.cancelRequested)}
             />
             <DiagnosticRow
               label={COPY.diagnostics.lastImportError}

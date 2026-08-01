@@ -1,10 +1,12 @@
-import type { WaveformFile } from '@/domain/project';
+import type { StoredWaveform } from '@/domain/project';
 import { WaveformLoader, WaveformLoaderError } from '@/services/WaveformLoader';
 import { type StorageEntry, type StorageFileSystem, StorageLayout } from '@/services/StorageLayout';
 
 const DURATION_MS = 120_000;
+const PROJECT_ID = '550e8400-e29b-41d4-a716-446655440000';
 const PROJECT_METADATA = {
-  waveformRelativePath: 'Projects/project-id/waveform.json',
+  id: PROJECT_ID,
+  waveformFileName: 'waveform.json',
   durationMs: DURATION_MS,
 } as const;
 
@@ -58,9 +60,7 @@ class WaveformMemoryFileSystem implements StorageFileSystem {
 
   async copyFile(sourceUri: string, destinationUri: string): Promise<void> {
     const content = this.files.get(sourceUri);
-    if (content === undefined) {
-      throw new Error(`Missing test file: ${sourceUri}`);
-    }
+    if (content === undefined) throw new Error(`Missing test file: ${sourceUri}`);
     this.files.set(destinationUri, content);
   }
 
@@ -82,12 +82,12 @@ class WaveformMemoryFileSystem implements StorageFileSystem {
   }
 }
 
-function validWaveform(): WaveformFile {
+function validWaveform(): StoredWaveform {
   return {
     schemaVersion: 1,
-    pointCount: 2048,
     durationMs: DURATION_MS,
-    amplitudes: Array.from({ length: 2048 }, (_, index) => (index % 2 === 0 ? 0.25 : 0.75)),
+    sampleCount: 2048,
+    samples: Array.from({ length: 2048 }, (_, index) => (index % 2 === 0 ? 0.25 : 0.75)),
   };
 }
 
@@ -95,36 +95,32 @@ function makeHarness() {
   const fileSystem = new WaveformMemoryFileSystem();
   const layout = new StorageLayout(fileSystem);
   const loader = new WaveformLoader(layout);
-  const waveformUri = layout.resolveDocumentRelativePath(PROJECT_METADATA.waveformRelativePath);
-  return { fileSystem, layout, loader, waveformUri };
+  const waveformUri = layout.projectWaveformUri(PROJECT_ID);
+  return { fileSystem, loader, waveformUri };
 }
 
 describe('WaveformLoader', () => {
-  test('strictly parses the cached waveform JSON through the metadata boundary', async () => {
+  test('strictly loads the active project cached waveform from its fixed filename', async () => {
     const { fileSystem, loader, waveformUri } = makeHarness();
     const waveform = validWaveform();
     fileSystem.putFile(waveformUri, waveform);
 
     await expect(loader.load(PROJECT_METADATA)).resolves.toEqual(waveform);
     expect(fileSystem.reads).toEqual([waveformUri]);
-    expect(waveformUri.endsWith('/waveform.json')).toBe(true);
+    expect(waveform.samples).toHaveLength(2048);
   });
 
   test('rejects missing, malformed, and schema-invalid waveform files', async () => {
     const missing = makeHarness();
     await expect(missing.loader.load(PROJECT_METADATA)).rejects.toMatchObject<
       Partial<WaveformLoaderError>
-    >({
-      code: 'E_WAVEFORM_FILE_NOT_FOUND',
-    });
+    >({ code: 'E_WAVEFORM_FILE_NOT_FOUND' });
 
     const malformed = makeHarness();
     malformed.fileSystem.putFile(malformed.waveformUri, '{broken json');
     await expect(malformed.loader.load(PROJECT_METADATA)).rejects.toMatchObject<
       Partial<WaveformLoaderError>
-    >({
-      code: 'E_WAVEFORM_FILE_INVALID',
-    });
+    >({ code: 'E_WAVEFORM_FILE_INVALID' });
 
     const invalid = makeHarness();
     invalid.fileSystem.putFile(invalid.waveformUri, {
@@ -133,9 +129,7 @@ describe('WaveformLoader', () => {
     });
     await expect(invalid.loader.load(PROJECT_METADATA)).rejects.toMatchObject<
       Partial<WaveformLoaderError>
-    >({
-      code: 'E_WAVEFORM_FILE_INVALID',
-    });
+    >({ code: 'E_WAVEFORM_FILE_INVALID' });
   });
 
   test('rejects a waveform whose duration does not match project metadata', async () => {
@@ -146,32 +140,28 @@ describe('WaveformLoader', () => {
     });
 
     await expect(loader.load(PROJECT_METADATA)).rejects.toMatchObject<Partial<WaveformLoaderError>>(
-      {
-        code: 'E_WAVEFORM_DURATION_MISMATCH',
-      },
+      { code: 'E_WAVEFORM_DURATION_MISMATCH' },
     );
   });
 
-  test('rejects unsafe relative paths before reading any file', async () => {
+  test('rejects unsafe project IDs and non-contract filenames before reading', async () => {
     const { fileSystem, loader } = makeHarness();
 
     await expect(
       loader.load({
-        waveformRelativePath: '../outside/waveform.json',
+        id: '../outside',
+        waveformFileName: 'waveform.json',
         durationMs: DURATION_MS,
       }),
-    ).rejects.toMatchObject<Partial<WaveformLoaderError>>({
-      code: 'E_WAVEFORM_FILE_INVALID',
-    });
+    ).rejects.toMatchObject<Partial<WaveformLoaderError>>({ code: 'E_WAVEFORM_FILE_INVALID' });
 
     await expect(
       loader.load({
-        waveformRelativePath: 'Projects/project-id/audio.m4a',
+        id: PROJECT_ID,
+        waveformFileName: 'audio.m4a' as 'waveform.json',
         durationMs: DURATION_MS,
       }),
-    ).rejects.toMatchObject<Partial<WaveformLoaderError>>({
-      code: 'E_WAVEFORM_FILE_INVALID',
-    });
+    ).rejects.toMatchObject<Partial<WaveformLoaderError>>({ code: 'E_WAVEFORM_FILE_INVALID' });
     expect(fileSystem.reads).toEqual([]);
   });
 });

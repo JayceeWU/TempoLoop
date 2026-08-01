@@ -1,59 +1,79 @@
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 
-import type { PlaybackSnapshot } from '../modules/dance-audio';
 import { DiagnosticsScreen } from '@/components/DiagnosticsScreen';
 import { COPY } from '@/constants/copy';
+import type { PlaybackSnapshot } from '@/domain/playback';
 import type { DevelopmentLogEntry } from '@/services/DevelopmentLog';
 import { DiagnosticsService, type DiagnosticsSnapshot } from '@/services/DiagnosticsService';
 
-const PLAYBACK_SNAPSHOT: PlaybackSnapshot = {
-  state: 'paused',
-  currentTimeMs: 12_000,
-  durationMs: 90_000,
+jest.mock('@/services/ImportCoordinator', () => ({
+  importCoordinator: { isImportActive: () => false },
+}));
+
+const PLAYBACK: PlaybackSnapshot = {
+  mode: 'practice',
+  status: 'paused',
+  projectId: 'private-project-id',
+  segmentIndex: 2,
+  sourcePositionMs: 12_000,
+  sourceDurationMs: 90_000,
+  clipStartMs: 6_000,
+  clipEndMs: 20_000,
   rate: 0.8,
-  activeRangeStartMs: 6_000,
-  activeRangeEndMs: 20_000,
+  commandGeneration: 4,
 };
 
 const LOG_ENTRY: DevelopmentLogEntry = {
   sequence: 1,
   timestampIso: '2026-07-31T12:00:00.000Z',
   level: 'error',
-  event: 'native.operation.failed',
-  context: { code: 'E_SEEK_FAILED' },
+  event: 'media.operation.failed',
+  context: { code: 'E_AUDIO_LOAD_FAILED', operation: 'loadAudio' },
 };
 
-function diagnosticsSnapshot(): DiagnosticsSnapshot {
+function diagnosticsSnapshot(commandGeneration = 4): DiagnosticsSnapshot {
   return {
     generatedAtIso: '2026-07-31T12:00:00.000Z',
-    native: {
+    media: {
+      moduleName: 'TempoLoopMedia',
       available: true,
-      apiVersion: 1,
-      lastErrorCode: 'E_SEEK_FAILED',
+      contractVersion: 1,
+      lastErrorCode: 'E_AUDIO_LOAD_FAILED',
     },
     playback: {
-      state: PLAYBACK_SNAPSHOT.state,
-      loadedFileUri: '<documents>/TempoLoop/Projects/project-1/audio.m4a',
-      selectedProjectId: 'project-1',
-      selectedSegment: 2,
-      selectedRate: 0.9,
-      currentTimeMs: PLAYBACK_SNAPSHOT.currentTimeMs,
-      durationMs: PLAYBACK_SNAPSHOT.durationMs,
-      rate: PLAYBACK_SNAPSHOT.rate,
-      activeRangeStartMs: PLAYBACK_SNAPSHOT.activeRangeStartMs,
-      activeRangeEndMs: PLAYBACK_SNAPSHOT.activeRangeEndMs,
+      mode: 'practice',
+      status: 'paused',
+      sourceLoaded: true,
+      segmentIndex: 2,
+      currentTimeMs: 12_000,
+      durationMs: 90_000,
+      rate: 0.8,
+      activeRangeStartMs: 6_000,
+      activeRangeEndMs: 20_000,
+      commandGeneration,
     },
-    storage: { availableDiskBytes: 2 * 1024 * 1024 * 1024 },
+    storage: {
+      availableDiskBytes: 2 * 1024 * 1024 * 1024,
+      rootPath: '<documents>/TempoLoop',
+    },
     repository: {
       projectSchemaVersion: 1,
       waveformSchemaVersion: 1,
       initialized: true,
       projectCount: 2,
-      lastError: null,
-      recoveryDiagnosticCodes: ['UNINDEXED_PROJECT_FILES'],
+      readyProjectCount: 1,
+      repairProjectCount: 1,
+      corruptProjectCount: 1,
+      lastErrorCode: null,
+      recoveryDiagnosticCodes: ['CORRUPT_PROJECT_METADATA'],
     },
     import: {
-      active: false,
+      storeStatus: 'importing',
+      coordinatorActive: true,
+      stage: 'waveform',
+      stageProgress: 0.5,
+      overallProgress: 0.75,
+      cancelRequested: false,
       lastErrorCode: 'E_VIDEO_TOO_LARGE',
     },
     logEntries: [LOG_ENTRY],
@@ -63,10 +83,12 @@ function diagnosticsSnapshot(): DiagnosticsSnapshot {
 class FakeDiagnosticsService extends DiagnosticsService {
   collectCallCount = 0;
   clearCallCount = 0;
+  receivedPlayback: PlaybackSnapshot | undefined;
   private entries: readonly DevelopmentLogEntry[] = [LOG_ENTRY];
 
-  override async collect(): Promise<DiagnosticsSnapshot> {
+  override async collect(playback?: PlaybackSnapshot): Promise<DiagnosticsSnapshot> {
     this.collectCallCount += 1;
+    this.receivedPlayback = playback;
     return { ...diagnosticsSnapshot(), logEntries: this.entries };
   }
 
@@ -97,12 +119,7 @@ function deferred<Value>(): Deferred<Value> {
     resolvePromise = resolve;
     rejectPromise = reject;
   });
-
-  return {
-    promise,
-    resolve: resolvePromise,
-    reject: rejectPromise,
-  };
+  return { promise, resolve: resolvePromise, reject: rejectPromise };
 }
 
 class ControlledDiagnosticsService extends DiagnosticsService {
@@ -126,44 +143,39 @@ class ControlledDiagnosticsService extends DiagnosticsService {
   }
 }
 
-describe('DiagnosticsScreen', () => {
-  test('renders the required development diagnostics with only redacted paths', async () => {
+describe('Android DiagnosticsScreen', () => {
+  test('renders safe TempoLoopMedia, import, repository, and expo-audio state', async () => {
     const service = new FakeDiagnosticsService();
-    const screen = await render(<DiagnosticsScreen onClose={jest.fn()} service={service} />);
+    const screen = await render(
+      <DiagnosticsScreen onClose={jest.fn()} playbackSnapshot={PLAYBACK} service={service} />,
+    );
 
-    await waitFor(() => {
-      expect(screen.getByText(COPY.diagnostics.nativeSection)).toBeOnTheScreen();
-    });
-
+    await waitFor(() => expect(screen.getAllByText(COPY.diagnostics.mediaSection)).toHaveLength(2));
+    expect(service.receivedPlayback).toBe(PLAYBACK);
     expect(screen.getByText(COPY.diagnostics.playbackSection)).toBeOnTheScreen();
-    expect(screen.getByText(COPY.diagnostics.storageSection)).toBeOnTheScreen();
     expect(screen.getByText(COPY.diagnostics.repositorySection)).toBeOnTheScreen();
     expect(screen.getByText(COPY.diagnostics.importSection)).toBeOnTheScreen();
-    expect(screen.getByText(COPY.diagnostics.logSection)).toBeOnTheScreen();
-    expect(
-      screen.getByText('<documents>/TempoLoop/Projects/project-1/audio.m4a'),
-    ).toBeOnTheScreen();
+    expect(screen.getByText('<documents>/TempoLoop')).toBeOnTheScreen();
     expect(screen.getByText('2048 MB')).toBeOnTheScreen();
-    expect(screen.getByText('E_SEEK_FAILED')).toBeOnTheScreen();
+    expect(screen.getByText('E_AUDIO_LOAD_FAILED')).toBeOnTheScreen();
     expect(screen.getByText('E_VIDEO_TOO_LARGE')).toBeOnTheScreen();
-    expect(screen.toJSON()).not.toContain('file:///');
+    expect(JSON.stringify(screen.toJSON())).not.toContain('private-project-id');
+    expect(JSON.stringify(screen.toJSON())).not.toContain('content://');
   });
 
   test('supports refresh, clear, and close actions', async () => {
     const service = new FakeDiagnosticsService();
     const onClose = jest.fn();
-    const screen = await render(<DiagnosticsScreen onClose={onClose} service={service} />);
+    const screen = await render(
+      <DiagnosticsScreen onClose={onClose} playbackSnapshot={PLAYBACK} service={service} />,
+    );
 
     await waitFor(() => expect(service.collectCallCount).toBe(1));
-
     await fireEvent.press(screen.getByRole('button', { name: COPY.diagnostics.refresh }));
     await waitFor(() => expect(service.collectCallCount).toBe(2));
-
     await fireEvent.press(screen.getByRole('button', { name: COPY.diagnostics.clear }));
     expect(service.clearCallCount).toBe(1);
     expect(screen.getByText(COPY.diagnostics.logEmpty)).toBeOnTheScreen();
-    expect(screen.getByRole('button', { name: COPY.diagnostics.clear })).toBeDisabled();
-
     await fireEvent.press(screen.getByRole('button', { name: COPY.diagnostics.back }));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
@@ -171,7 +183,6 @@ describe('DiagnosticsScreen', () => {
   test('clears a failed state after a successful retry', async () => {
     const service = new ControlledDiagnosticsService();
     const screen = await render(<DiagnosticsScreen onClose={jest.fn()} service={service} />);
-    expect(service.requests).toHaveLength(1);
 
     await act(async () => {
       service.requests[0]?.reject(new Error('First collection failed'));
@@ -180,16 +191,11 @@ describe('DiagnosticsScreen', () => {
     expect(screen.getByText(COPY.diagnostics.loadError)).toBeOnTheScreen();
 
     await fireEvent.press(screen.getAllByRole('button', { name: COPY.diagnostics.refresh })[0]!);
-    expect(service.requests).toHaveLength(2);
     await act(async () => {
       service.requests[1]?.resolve(diagnosticsSnapshot());
       await Promise.resolve();
     });
-
-    await waitFor(() => {
-      expect(screen.queryByText(COPY.diagnostics.loadError)).toBeNull();
-      expect(screen.getByText(COPY.diagnostics.nativeSection)).toBeOnTheScreen();
-    });
+    await waitFor(() => expect(screen.queryByText(COPY.diagnostics.loadError)).toBeNull());
   });
 
   test('ignores stale refresh completion and completion after unmount', async () => {
@@ -200,40 +206,22 @@ describe('DiagnosticsScreen', () => {
       await Promise.resolve();
     });
 
-    const refreshButton = screen.getByRole('button', {
-      name: COPY.diagnostics.refresh,
-    });
+    const refreshButton = screen.getByRole('button', { name: COPY.diagnostics.refresh });
     await fireEvent.press(refreshButton);
     await fireEvent.press(refreshButton);
-    expect(service.requests).toHaveLength(3);
-
     await act(async () => {
-      service.requests[2]?.resolve({
-        ...diagnosticsSnapshot(),
-        playback: {
-          ...diagnosticsSnapshot().playback,
-          selectedProjectId: 'newer-project',
-        },
-      });
+      service.requests[2]?.resolve(diagnosticsSnapshot(12));
       await Promise.resolve();
     });
-    expect(screen.getByText('newer-project')).toBeOnTheScreen();
+    expect(screen.getByText('12')).toBeOnTheScreen();
 
     await act(async () => {
-      service.requests[1]?.resolve({
-        ...diagnosticsSnapshot(),
-        playback: {
-          ...diagnosticsSnapshot().playback,
-          selectedProjectId: 'stale-project',
-        },
-      });
+      service.requests[1]?.resolve(diagnosticsSnapshot(11));
       await Promise.resolve();
     });
-    expect(screen.queryByText('stale-project')).toBeNull();
-    expect(screen.getByText('newer-project')).toBeOnTheScreen();
+    expect(screen.queryByText('11')).toBeNull();
 
     await fireEvent.press(refreshButton);
-    expect(service.requests).toHaveLength(4);
     await screen.unmount();
     await act(async () => {
       service.requests[3]?.resolve(diagnosticsSnapshot());

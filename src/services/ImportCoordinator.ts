@@ -1,57 +1,64 @@
 import * as Crypto from 'expo-crypto';
-import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 
-import { MAX_PROJECT_NAME_LENGTH, MAX_VIDEO_BYTES, WAVEFORM_POINT_COUNT } from '@/constants/app';
-import { COPY } from '@/constants/copy';
-import type { DanceProject, WaveformFile } from '@/domain/project';
-import { ProjectNameSchema, WaveformFileSchema, normalizeProjectName } from '@/domain/validation';
-import { type CreateProjectInput, projectRepository } from '@/repositories/ProjectRepository';
 import {
-  type NativeAudioService,
-  type NativeAudioSubscription,
-  nativeAudioService,
-} from '@/services/NativeAudioService';
+  MAX_AUDIO_BYTES,
+  MAX_PROJECT_NAME_LENGTH,
+  MAX_VIDEO_BYTES,
+  WAVEFORM_POINT_COUNT,
+} from '@/constants/app';
+import { COPY } from '@/constants/copy';
+import type { DanceProject } from '@/domain/project';
+import { ProjectNameSchema, normalizeProjectName } from '@/domain/validation';
+import { type FinalizeImportInput, projectRepository } from '@/repositories/ProjectRepository';
 import { developmentDiagnosticState } from '@/services/DevelopmentDiagnosticState';
 import {
-  PickedSourceMarkerSchema,
-  type PickedSourceMarkerFile,
-} from '@/services/PickedSourceMarker';
+  type PartialAudioValidator,
+  partialAudioValidator,
+} from '@/services/PartialAudioValidator';
 import { type StorageLayout, storageLayout } from '@/services/StorageLayout';
 import {
-  type CacheFileCleanupResult,
-  type ImportFileAccess,
-  hasEnoughFreeSpace,
-  importFileAccess,
-  isFileUriWithinDirectory,
-  isPositiveByteCount,
-  isWithinVideoSizeLimit,
-  requiredFreeSpaceForImport,
-  safePickedVideoExtension,
-} from '@/utils/file';
-import { AppError } from '@/utils/errors';
-import { getFileNameFromUri, isLocalFileUri, parseLocalFileUri } from '@/utils/uri';
-import type { ImportProgressEvent } from '../../modules/dance-audio';
+  type StructuredDiagnosticsRecorder,
+  structuredDevelopmentDiagnostics,
+} from '@/services/StructuredDevelopmentDiagnostics';
+import {
+  TempoLoopMediaService,
+  TempoLoopMediaServiceError,
+  tempoLoopMediaService,
+} from '@/services/TempoLoopMediaService';
+import {
+  importStateController,
+  type ImportSelectionState,
+  type ImportStateController,
+  type ImportTerminalError,
+} from '@/stores/useImportStore';
+import { useProjectStore } from '@/stores/useProjectStore';
+import {
+  assertImportMediaResult,
+  type ImportMediaResult,
+  type ImportProgressEvent,
+  type ImportStage,
+  type TempoLoopMediaSubscription,
+  type MediaInspection,
+  type PickedMediaSource,
+  type SourceMediaKind,
+} from '../../modules/tempoloop-media';
 
 export const IMPORT_KEEP_AWAKE_TAG = 'TempoLoopImport';
 
 export type ImportCoordinatorErrorCode =
   | 'E_IMPORT_IN_PROGRESS'
-  | 'E_PHOTO_PERMISSION_DENIED'
   | 'E_PICKER_RESULT_INVALID'
-  | 'E_NOT_A_VIDEO'
   | 'E_INVALID_LOCAL_URI'
-  | 'E_FILE_SIZE_UNAVAILABLE'
+  | 'E_AUDIO_TOO_LARGE'
   | 'E_VIDEO_TOO_LARGE'
-  | 'E_INSUFFICIENT_STORAGE'
-  | 'E_WAVEFORM_INVALID'
-  | 'E_NATIVE_RESULT_INVALID';
+  | 'E_NATIVE_RESULT_INVALID'
+  | 'E_POST_COMMIT_REFRESH_FAILED';
 
 export interface ImportCoordinatorErrorDetails {
   readonly sizeBytes?: number;
   readonly maxSizeBytes?: number;
-  readonly availableBytes?: number;
-  readonly requiredBytes?: number;
 }
 
 export class ImportCoordinatorError extends Error {
@@ -67,34 +74,51 @@ export class ImportCoordinatorError extends Error {
   }
 }
 
-export interface SelectedVideo {
+/** Picker metadata only. JavaScript never opens, copies, converts, or deletes this URI. */
+export interface SelectedMedia {
   readonly selectionId: string;
+  readonly sourceKindHint: SourceMediaKind;
   readonly uri: string;
-  readonly sourceExtension: string;
-  readonly sizeBytes: number;
+  readonly sizeBytes: number | null;
+  readonly mimeType: string | null;
   readonly fileName: string | null;
   readonly suggestedName: string;
 }
 
+/**
+ * Android providers usually expose renamed `.m4s` files as either an ISO media
+ * segment or an opaque binary document. Native inspection remains authoritative
+ * and rejects any selected document that does not contain a decodable audio track.
+ */
+export const AUDIO_DOCUMENT_PICKER_MIME_TYPES = [
+  'audio/*',
+  'application/octet-stream',
+  'video/iso.segment',
+] as const;
+
 export type ImportUiPhase = 'preparing' | 'extracting' | 'waveform' | 'saving';
 
 export interface ImportProgressSnapshot {
+  /** Compatibility alias for the operation ID used by the current sheet. */
   readonly taskId: string;
+  readonly operationId?: string;
   readonly phase: ImportUiPhase;
+  readonly stage?: ImportStage;
   readonly progress: number;
+  readonly stageProgress?: number | null;
+  readonly overallProgress?: number | null;
 }
 
 export interface ImportProjectRequest {
-  readonly selection: SelectedVideo;
+  readonly selection: SelectedMedia;
   readonly name: string;
   readonly onProgress?: (snapshot: ImportProgressSnapshot) => void;
 }
 
-export interface VideoPickerDependency {
-  requestMediaLibraryPermissionsAsync(): Promise<{ readonly granted: boolean }>;
-  launchImageLibraryAsync(
-    options: ImagePicker.ImagePickerOptions,
-  ): Promise<ImagePicker.ImagePickerResult>;
+export interface DocumentPickerDependency {
+  getDocumentAsync(
+    options: DocumentPicker.DocumentPickerOptions,
+  ): Promise<DocumentPicker.DocumentPickerResult>;
 }
 
 export interface KeepAwakeDependency {
@@ -102,49 +126,48 @@ export interface KeepAwakeDependency {
   deactivate(tag: string): Promise<void>;
 }
 
-export interface ImportNativeAudioDependency {
-  extractAudio(
-    taskId: string,
-    inputVideoUri: string,
-    outputAudioUri: string,
-  ): ReturnType<NativeAudioService['extractAudio']>;
-  generateWaveform(
-    taskId: string,
-    audioUri: string,
-    pointCount: number,
-  ): ReturnType<NativeAudioService['generateWaveform']>;
-  cancelTask(taskId: string): Promise<void>;
-  addImportProgressListener(
-    listener: (event: ImportProgressEvent) => void,
-  ): NativeAudioSubscription;
-}
+export type ImportMediaDependency = Pick<
+  TempoLoopMediaService,
+  | 'pickGalleryVideo'
+  | 'inspectMedia'
+  | 'importProjectMedia'
+  | 'cancelImport'
+  | 'addImportProgressListener'
+>;
 
 export interface ImportProjectRepository {
   initialize(): Promise<void>;
-  createFromImportedFiles(input: CreateProjectInput): Promise<DanceProject>;
+  createImportDirectory(projectId: string): string | Promise<string>;
+  removeImportDirectory(projectId: string): void | Promise<void>;
+  finalizeImport(input: FinalizeImportInput): Promise<DanceProject>;
 }
 
 export interface ImportCoordinatorDependencies {
-  readonly picker?: VideoPickerDependency;
-  readonly fileAccess?: ImportFileAccess;
+  readonly picker?: DocumentPickerDependency;
   readonly keepAwake?: KeepAwakeDependency;
-  readonly nativeAudio?: ImportNativeAudioDependency;
+  readonly media?: ImportMediaDependency;
   readonly repository?: ImportProjectRepository;
-  readonly layout?: StorageLayout;
+  readonly layout?: Pick<StorageLayout, 'importPartialAudioUri'>;
+  readonly audioValidator?: PartialAudioValidator;
+  readonly importState?: ImportStateController;
+  readonly refreshProjects?: () => Promise<void>;
   readonly randomUuid?: () => string;
+  readonly diagnostics?: StructuredDiagnosticsRecorder;
 }
 
 interface ActiveImport {
-  readonly taskId: string;
+  readonly operationId: string;
+  readonly projectId: string;
   readonly onProgress?: (snapshot: ImportProgressSnapshot) => void;
+  readonly audioUri: string;
   cancelRequested: boolean;
   commitStarted: boolean;
   finished: boolean;
+  diagnosticStage: ImportStage | null;
 }
 
-const expoVideoPicker: VideoPickerDependency = {
-  requestMediaLibraryPermissionsAsync: () => ImagePicker.requestMediaLibraryPermissionsAsync(),
-  launchImageLibraryAsync: (options) => ImagePicker.launchImageLibraryAsync(options),
+const expoDocumentPicker: DocumentPickerDependency = {
+  getDocumentAsync: (options) => DocumentPicker.getDocumentAsync(options),
 };
 
 const expoKeepAwake: KeepAwakeDependency = {
@@ -163,296 +186,392 @@ function importError(
   return error;
 }
 
-function clampProgress(value: number): number {
-  if (!Number.isFinite(value)) {
-    return 0;
-  }
-
-  return Math.min(1, Math.max(0, value));
-}
-
 function removeFileExtension(fileName: string): string {
   const finalDotIndex = fileName.lastIndexOf('.');
-  if (finalDotIndex <= 0) {
-    return fileName;
-  }
-
-  return fileName.slice(0, finalDotIndex);
+  return finalDotIndex <= 0 ? fileName : fileName.slice(0, finalDotIndex);
 }
 
 function truncateCodePoints(value: string, maximum: number): string {
   return Array.from(value).slice(0, maximum).join('');
 }
 
-export function suggestedProjectName(fileName: string | null, uri: string): string {
-  const parsedUri = parseLocalFileUri(uri);
-  const candidateFileName = fileName ?? getFileNameFromUri(parsedUri) ?? '';
-  const candidate = normalizeProjectName(removeFileExtension(candidateFileName));
-  const truncated = normalizeProjectName(truncateCodePoints(candidate, MAX_PROJECT_NAME_LENGTH));
-
-  return truncated.length > 0 ? truncated : COPY.import.untitledProjectName;
+/** The URI is intentionally ignored; suggestions use picker display metadata only. */
+export function suggestedProjectName(fileName: string | null, _uri?: string): string {
+  const candidate = normalizeProjectName(
+    truncateCodePoints(removeFileExtension(fileName ?? ''), MAX_PROJECT_NAME_LENGTH),
+  );
+  const parsed = ProjectNameSchema.safeParse(candidate);
+  return parsed.success ? parsed.data : COPY.import.untitledProjectName;
 }
 
-function assertValidNativeExtractionResult(result: {
-  readonly durationMs: number;
-  readonly outputBytes: number;
-}): void {
-  if (!isPositiveByteCount(result.durationMs) || !isPositiveByteCount(result.outputBytes)) {
-    throw importError(
-      'E_NATIVE_RESULT_INVALID',
-      'DanceAudio returned invalid extraction metadata.',
-    );
+function isSupportedPickerUri(uri: string): boolean {
+  return (
+    uri.length > 'file://'.length &&
+    !/[\u0000-\u001f\u007f]/u.test(uri) &&
+    (uri.startsWith('content://') || uri.startsWith('file://'))
+  );
+}
+
+/** Picker zero and missing sizes are both unreliable hints, not empty files. */
+function normalizeSizeHint(size: number | undefined): number | null {
+  return Number.isSafeInteger(size) && size !== undefined && size > 0 ? size : null;
+}
+
+function normalizeMimeTypeHint(mimeType: string | undefined): string | null {
+  const normalized = mimeType?.trim().toLowerCase();
+  return normalized === undefined || normalized.length === 0 ? null : normalized;
+}
+
+function normalizeFileNameHint(fileName: string | null | undefined): string | null {
+  const normalized = fileName?.trim();
+  return normalized === undefined || normalized.length === 0 ? null : normalized;
+}
+
+function selectedMediaToState(selection: SelectedMedia): ImportSelectionState {
+  return {
+    selectionId: selection.selectionId,
+    sourceKindHint: selection.sourceKindHint,
+    sourceUri: selection.uri,
+    displayName: selection.fileName,
+    sizeBytes: selection.sizeBytes,
+    mimeType: selection.mimeType,
+    suggestedName: selection.suggestedName,
+  };
+}
+
+function uiPhase(stage: ImportStage): ImportUiPhase {
+  switch (stage) {
+    case 'inspecting':
+      return 'preparing';
+    case 'exporting':
+      return 'extracting';
+    case 'waveform':
+      return 'waveform';
+    case 'finalizing':
+      return 'saving';
   }
 }
 
-function cancelledError(): AppError {
-  return new AppError('E_CANCELLED', 'The TempoLoop import was cancelled by the user.');
+function clampProgress(value: number | null): number | null {
+  if (value === null || !Number.isFinite(value)) {
+    return null;
+  }
+  return Math.min(1, Math.max(0, value));
+}
+
+function terminalError(error: unknown): ImportTerminalError {
+  if (error instanceof TempoLoopMediaServiceError) {
+    return { code: error.code, userMessage: error.userMessage };
+  }
+  if (error instanceof ImportCoordinatorError) {
+    return { code: error.code, userMessage: COPY.import.failureMessage };
+  }
+  return { code: 'E_UNKNOWN_NATIVE', userMessage: COPY.import.failureMessage };
+}
+
+function cancelledError(cause?: unknown): TempoLoopMediaServiceError {
+  return new TempoLoopMediaServiceError(
+    'E_IMPORT_CANCELLED',
+    'The TempoLoop import was cancelled.',
+    cause,
+  );
 }
 
 export class ImportCoordinator {
-  private readonly picker: VideoPickerDependency;
-  private readonly fileAccess: ImportFileAccess;
+  private readonly picker: DocumentPickerDependency;
   private readonly keepAwake: KeepAwakeDependency;
-  private readonly nativeAudio: ImportNativeAudioDependency;
+  private readonly media: ImportMediaDependency;
   private readonly repository: ImportProjectRepository;
-  private readonly layout: StorageLayout;
+  private readonly layout: Pick<StorageLayout, 'importPartialAudioUri'>;
+  private readonly audioValidator: PartialAudioValidator;
+  private readonly importState: ImportStateController;
+  private readonly refreshProjects: () => Promise<void>;
   private readonly randomUuid: () => string;
+  private readonly diagnostics: StructuredDiagnosticsRecorder;
   private activeImport: ActiveImport | null = null;
-  private selectionInProgress = false;
 
   constructor(dependencies: ImportCoordinatorDependencies = {}) {
-    this.picker = dependencies.picker ?? expoVideoPicker;
-    this.fileAccess = dependencies.fileAccess ?? importFileAccess;
+    this.picker = dependencies.picker ?? expoDocumentPicker;
     this.keepAwake = dependencies.keepAwake ?? expoKeepAwake;
-    this.nativeAudio = dependencies.nativeAudio ?? nativeAudioService;
+    this.media = dependencies.media ?? tempoLoopMediaService;
     this.repository = dependencies.repository ?? projectRepository;
     this.layout = dependencies.layout ?? storageLayout;
+    this.audioValidator = dependencies.audioValidator ?? partialAudioValidator;
+    this.importState = dependencies.importState ?? importStateController();
+    this.refreshProjects =
+      dependencies.refreshProjects ?? (() => useProjectStore.getState().refresh());
     this.randomUuid = dependencies.randomUuid ?? Crypto.randomUUID;
+    this.diagnostics = dependencies.diagnostics ?? structuredDevelopmentDiagnostics;
   }
 
   isImportActive(): boolean {
     return this.activeImport !== null;
   }
 
-  async selectVideo(): Promise<SelectedVideo | null> {
-    this.assertNoActiveImport();
-    this.selectionInProgress = true;
+  async selectVideoFromGallery(): Promise<SelectedMedia | null> {
+    if (this.activeImport !== null || !this.importState.tryBeginSelection()) {
+      throw importError(
+        'E_IMPORT_IN_PROGRESS',
+        'Only one TempoLoop media selection or import can run at a time.',
+      );
+    }
 
     try {
-      return await this.selectVideoInternal();
+      const picked = await this.media.pickGalleryVideo();
+      if (picked === null) {
+        this.importState.cancelSelection();
+        return null;
+      }
+      const selection = this.createSelection('video', picked);
+      this.importState.finishSelection(selectedMediaToState(selection));
+      return selection;
     } catch (error) {
+      this.importState.failSelection(terminalError(error));
       if (!(error instanceof ImportCoordinatorError)) {
-        developmentDiagnosticState.recordImportError(error, 'selectVideo');
+        developmentDiagnosticState.recordImportError(error, 'selectVideoFromGallery');
       }
       throw error;
-    } finally {
-      this.selectionInProgress = false;
     }
   }
 
-  private async selectVideoInternal(): Promise<SelectedVideo | null> {
-    await this.repository.initialize();
-
-    const permission = await this.picker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) {
+  async selectAudio(): Promise<SelectedMedia | null> {
+    if (this.activeImport !== null || !this.importState.tryBeginSelection()) {
       throw importError(
-        'E_PHOTO_PERMISSION_DENIED',
-        'Photo-library permission is required to select a video.',
+        'E_IMPORT_IN_PROGRESS',
+        'Only one TempoLoop media selection or import can run at a time.',
       );
     }
 
-    const result = await this.picker.launchImageLibraryAsync({
-      mediaTypes: ['videos'],
-      allowsEditing: false,
-      allowsMultipleSelection: false,
-      selectionLimit: 1,
-      shouldDownloadFromNetwork: true,
-      preferredAssetRepresentationMode:
-        ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Current,
-    });
-
-    if (result.canceled) {
-      return null;
-    }
-
-    if (result.assets.length !== 1) {
-      for (const candidate of result.assets) {
-        this.tryCleanupPickedFile(candidate.uri);
-      }
-      throw importError(
-        'E_PICKER_RESULT_INVALID',
-        'The photo picker did not return exactly one video.',
-      );
-    }
-
-    const asset = result.assets[0];
-    if (asset === undefined) {
-      throw importError('E_PICKER_RESULT_INVALID', 'The photo picker returned no selected video.');
-    }
-
-    let markedSelectionId: string | null = null;
     try {
-      if (asset.type !== 'video') {
-        throw importError('E_NOT_A_VIDEO', 'The selected photo-library item is not a video.');
+      const result = await this.picker.getDocumentAsync({
+        type: [...AUDIO_DOCUMENT_PICKER_MIME_TYPES],
+        multiple: false,
+        copyToCacheDirectory: false,
+      });
+      if (result.canceled) {
+        this.importState.cancelSelection();
+        return null;
       }
-
-      if (!isLocalFileUri(asset.uri)) {
+      if (result.assets.length !== 1 || result.assets[0] === undefined) {
         throw importError(
-          'E_INVALID_LOCAL_URI',
-          'The selected video does not have a usable local file URI.',
+          'E_PICKER_RESULT_INVALID',
+          'The document picker did not return exactly one audio file.',
         );
       }
 
-      if (
-        !isFileUriWithinDirectory(asset.uri, this.layout.fileSystem.cacheDirectoryUri) ||
-        isFileUriWithinDirectory(asset.uri, this.layout.cacheRootUri)
-      ) {
-        throw importError(
-          'E_INVALID_LOCAL_URI',
-          'The selected video is not inside the app Cache directory.',
-        );
-      }
-
-      const selectionId = this.randomUuid();
-      this.preparePickedSourceMarker(selectionId, asset.uri);
-      markedSelectionId = selectionId;
-
-      const sizeBytes = this.determineFileSize(asset.fileSize, asset.uri);
-      this.validateVideoSizeAndDisk(sizeBytes);
-      const sourceExtension = safePickedVideoExtension(asset.fileName ?? null, asset.uri);
-      const suggestedName = suggestedProjectName(asset.fileName ?? null, asset.uri);
-      const ownedSource = await this.adoptPickedSource(asset.uri, selectionId, sourceExtension);
-
-      return {
-        selectionId,
-        uri: ownedSource.uri,
-        sourceExtension,
-        sizeBytes: ownedSource.sizeBytes,
-        fileName: asset.fileName ?? null,
-        suggestedName,
-      };
+      const asset = result.assets[0];
+      const selection = this.createSelection('audio', {
+        uri: asset.uri,
+        sizeBytes: normalizeSizeHint(asset.size),
+        mimeType: normalizeMimeTypeHint(asset.mimeType),
+        fileName: normalizeFileNameHint(asset.name),
+      });
+      this.importState.finishSelection(selectedMediaToState(selection));
+      return selection;
     } catch (error) {
-      if (markedSelectionId === null) {
-        this.tryCleanupPickedFile(asset.uri);
-      } else {
-        this.cleanupPickerSourceAfterFailedOwnership(asset.uri, markedSelectionId);
+      this.importState.failSelection(terminalError(error));
+      if (!(error instanceof ImportCoordinatorError)) {
+        developmentDiagnosticState.recordImportError(error, 'selectAudio');
       }
       throw error;
     }
   }
 
-  discardSelection(selection: SelectedVideo): void {
-    this.tryCleanupOwnedSelection(selection.selectionId);
+  /** The provider owns the URI; abandoning naming only clears in-memory state. */
+  discardSelection(selection: SelectedMedia): void {
+    this.importState.discardSelection(selection.selectionId);
   }
 
   async importProject(request: ImportProjectRequest): Promise<DanceProject> {
-    this.assertNoActiveImport();
-
+    if (this.activeImport !== null) {
+      throw importError('E_IMPORT_IN_PROGRESS', 'Another TempoLoop import is already running.');
+    }
     const normalizedName = ProjectNameSchema.parse(request.name);
     this.assertValidSelection(request.selection);
 
-    const taskId = this.randomUuid();
+    const operationId = this.randomUuid();
     const projectId = this.randomUuid();
+    const audioUri = this.layout.importPartialAudioUri(projectId);
+    if (
+      !this.importState.tryBeginImport({
+        operationId,
+        projectId,
+        selection: selectedMediaToState(request.selection),
+        projectName: normalizedName,
+      })
+    ) {
+      throw importError(
+        'E_IMPORT_IN_PROGRESS',
+        'The selected media is no longer available for this import.',
+      );
+    }
+
     const active: ActiveImport = {
-      taskId,
+      operationId,
+      projectId,
+      audioUri,
       onProgress: request.onProgress,
       cancelRequested: false,
       commitStarted: false,
       finished: false,
+      diagnosticStage: null,
     };
     this.activeImport = active;
+    this.diagnostics.recordImportStarted({ operationId, projectId });
 
-    const stagingDirectoryUri = this.layout.stagingTaskDirectoryUri(taskId);
-    const stagedAudioUri = this.layout.stagingAudioUri(taskId);
-    const stagedWaveformUri = this.layout.stagingWaveformUri(taskId);
-    let progressSubscription: NativeAudioSubscription | null = null;
-    let keepAwakeActivated = false;
+    let subscription: TempoLoopMediaSubscription | null = null;
+    let keepAwakeActive = false;
     let committedProject: DanceProject | null = null;
 
     try {
-      this.emitProgress(active, 'preparing', 0);
       await this.repository.initialize();
-      this.layout.ensureBaseDirectories();
-      this.layout.fileSystem.ensureDirectory(stagingDirectoryUri);
-
-      progressSubscription = this.nativeAudio.addImportProgressListener((event) =>
+      await this.repository.createImportDirectory(projectId);
+      subscription = this.media.addImportProgressListener((event) =>
         this.handleNativeProgress(active, event),
       );
       await this.keepAwake.activate(IMPORT_KEEP_AWAKE_TAG);
-      keepAwakeActivated = true;
+      keepAwakeActive = true;
 
-      this.validateVideoSizeAndDisk(request.selection.sizeBytes);
+      this.emitProgress(active, {
+        operationId,
+        stage: 'inspecting',
+        stageProgress: 0,
+        overallProgress: 0,
+      });
       this.throwIfCancelled(active);
-      this.emitProgress(active, 'preparing', 1);
-      this.emitProgress(active, 'extracting', 0);
-
-      const extraction = await this.nativeAudio.extractAudio(
-        taskId,
-        request.selection.uri,
-        stagedAudioUri,
-      );
+      const inspection = await this.media.inspectMedia({
+        sourceUri: request.selection.uri,
+        maxAudioSourceBytes: MAX_AUDIO_BYTES,
+        maxVideoSourceBytes: MAX_VIDEO_BYTES,
+      });
       this.throwIfCancelled(active);
-      assertValidNativeExtractionResult(extraction);
-      this.emitProgress(active, 'extracting', 1);
-      this.emitProgress(active, 'waveform', 0);
+      this.validateInspection(inspection);
+      this.diagnostics.recordSourceInspected({
+        operationId,
+        sourceSizeBytes: inspection.sourceSizeBytes,
+        durationMs: inspection.durationMs,
+        audioMimeType: inspection.audioMimeType,
+        sampleRate: inspection.sampleRate,
+        channelCount: inspection.channelCount,
+      });
 
-      const amplitudes = await this.nativeAudio.generateWaveform(
-        taskId,
-        stagedAudioUri,
-        WAVEFORM_POINT_COUNT,
-      );
+      const result = await this.media.importProjectMedia({
+        operationId,
+        sourceUri: request.selection.uri,
+        outputAudioUri: audioUri,
+        waveformBinCount: WAVEFORM_POINT_COUNT,
+        maxAudioSourceBytes: MAX_AUDIO_BYTES,
+        maxVideoSourceBytes: MAX_VIDEO_BYTES,
+      });
       this.throwIfCancelled(active);
+      assertImportMediaResult(result, WAVEFORM_POINT_COUNT);
+      this.validateNativeResult(result, audioUri);
+      this.diagnostics.recordExportCompleted({
+        operationId,
+        durationMs: result.durationMs,
+        outputSizeBytes: result.audioSizeBytes,
+      });
+      this.diagnostics.recordWaveformCompleted({
+        operationId,
+        durationMs: result.durationMs,
+        binCount: result.waveform.length,
+      });
 
-      const waveform = this.validateWaveform(amplitudes, extraction.durationMs);
-      this.layout.fileSystem.writeText(stagedWaveformUri, JSON.stringify(waveform));
-      await this.validatePersistedWaveform(stagedWaveformUri, extraction.durationMs);
-      this.emitProgress(active, 'waveform', 1);
+      await this.audioValidator.validateLoadable(audioUri);
       this.throwIfCancelled(active);
 
       active.commitStarted = true;
-      this.emitProgress(active, 'saving', 0);
-      committedProject = await this.repository.createFromImportedFiles({
-        id: projectId,
+      committedProject = await this.repository.finalizeImport({
+        projectId,
         name: normalizedName,
-        durationMs: extraction.durationMs,
-        sourceVideoBytes: request.selection.sizeBytes,
-        stagedAudioUri,
-        stagedWaveformUri,
+        sourceDisplayName: request.selection.fileName,
+        inspection,
+        result,
       });
-      this.emitProgress(active, 'saving', 1);
+
+      try {
+        await this.refreshProjects();
+      } catch (error) {
+        throw importError(
+          'E_POST_COMMIT_REFRESH_FAILED',
+          'The project was saved, but the project list could not be refreshed.',
+          {},
+          error,
+        );
+      }
+
+      this.importState.completeImport(operationId, projectId);
+      this.diagnostics.recordImportCompleted({
+        operationId,
+        projectId,
+        stage: active.diagnosticStage,
+      });
       return committedProject;
     } catch (error) {
-      if (active.cancelRequested && committedProject === null) {
-        throw cancelledError();
+      if (!active.commitStarted && !active.cancelRequested) {
+        try {
+          await this.media.cancelImport(active.operationId);
+        } catch {
+          // Native cancellation is idempotent; preserve the original failure.
+        }
       }
-      if (!(error instanceof ImportCoordinatorError)) {
-        developmentDiagnosticState.recordImportError(error, 'importProject');
+      const finalError =
+        active.cancelRequested ||
+        (error instanceof TempoLoopMediaServiceError && error.isCancellation)
+          ? cancelledError(error)
+          : error;
+      this.importState.failImport(operationId, terminalError(finalError));
+      if (finalError instanceof TempoLoopMediaServiceError && finalError.isCancellation) {
+        this.diagnostics.recordImportCanceled({
+          operationId,
+          projectId,
+          stage: active.diagnosticStage,
+        });
+      } else {
+        this.diagnostics.recordImportFailed({
+          operationId,
+          projectId,
+          stage: active.diagnosticStage,
+          error: finalError,
+        });
+        if (
+          typeof finalError === 'object' &&
+          finalError !== null &&
+          'code' in finalError &&
+          finalError.code === 'E_AUDIO_LOAD_FAILED'
+        ) {
+          this.diagnostics.recordAudioLoadFailure({ operationId, error: finalError });
+        }
       }
-      throw error;
+      if (
+        !(finalError instanceof TempoLoopMediaServiceError && finalError.isCancellation) &&
+        !(finalError instanceof ImportCoordinatorError)
+      ) {
+        developmentDiagnosticState.recordImportError(finalError, 'importProject');
+      }
+      throw finalError;
     } finally {
       active.finished = true;
       try {
-        progressSubscription?.remove();
+        subscription?.remove();
       } catch {
-        // Event cleanup is best effort; the active-task guard ignores late events.
+        // A stale event is rejected by operation ID and active-task identity.
       }
-
-      try {
-        this.layout.fileSystem.deleteDirectory(stagingDirectoryUri);
-      } catch {
-        // Launch recovery removes stale staging if the OS temporarily locks it.
+      this.audioValidator.clearSource(audioUri);
+      if (committedProject === null) {
+        try {
+          await this.repository.removeImportDirectory(projectId);
+        } catch {
+          // Launch recovery retries cleanup of app-owned imports after its grace period.
+        }
       }
-
-      this.tryCleanupOwnedSelection(request.selection.selectionId);
-
-      if (keepAwakeActivated) {
+      if (keepAwakeActive) {
         try {
           await this.keepAwake.deactivate(IMPORT_KEEP_AWAKE_TAG);
         } catch {
-          // Do not turn a committed project into a reported import failure.
+          // Releasing a wake lock cannot change the import transaction result.
         }
       }
-
       if (this.activeImport === active) {
         this.activeImport = null;
       }
@@ -464,252 +583,85 @@ export class ImportCoordinator {
     if (active === null || active.finished || active.commitStarted) {
       return false;
     }
-
-    active.cancelRequested = true;
-    try {
-      await this.nativeAudio.cancelTask(active.taskId);
-    } catch (error) {
-      if (!(error instanceof AppError && error.isCancellation)) {
-        developmentDiagnosticState.recordImportError(error, 'cancelActiveImport');
-        throw error;
-      }
+    if (active.cancelRequested) {
+      return true;
     }
 
+    active.cancelRequested = true;
+    this.importState.requestCancel(active.operationId);
+    this.audioValidator.clearSource(active.audioUri);
+    try {
+      await this.media.cancelImport(active.operationId);
+    } catch (error) {
+      // The local cancellation flag is authoritative. Native cancellation is
+      // idempotent and its rejection must never trigger a user alert.
+      developmentDiagnosticState.recordImportError(cancelledError(error), 'cancelActiveImport');
+    }
     return true;
   }
 
-  private assertNoActiveImport(): void {
-    if (this.activeImport !== null || this.selectionInProgress) {
-      throw importError(
-        'E_IMPORT_IN_PROGRESS',
-        'Only one TempoLoop video selection or import can run at a time.',
-      );
+  private createSelection(
+    sourceKindHint: SourceMediaKind,
+    source: PickedMediaSource,
+  ): SelectedMedia {
+    if (!isSupportedPickerUri(source.uri)) {
+      throw importError('E_INVALID_LOCAL_URI', 'Select a local media file again.');
     }
+    const fileName = normalizeFileNameHint(source.fileName);
+    const selection: SelectedMedia = {
+      selectionId: this.randomUuid(),
+      sourceKindHint,
+      uri: source.uri,
+      sizeBytes: source.sizeBytes,
+      mimeType: source.mimeType,
+      fileName,
+      suggestedName: suggestedProjectName(fileName),
+    };
+    this.assertValidSelection(selection);
+    return selection;
   }
 
-  private assertValidSelection(selection: SelectedVideo): void {
-    if (!isLocalFileUri(selection.uri)) {
-      this.discardSelection(selection);
-      throw importError(
-        'E_INVALID_LOCAL_URI',
-        'The selected video does not have a usable local file URI.',
-      );
+  private assertValidSelection(selection: SelectedMedia): void {
+    if (!isSupportedPickerUri(selection.uri)) {
+      throw importError('E_INVALID_LOCAL_URI', 'Select the media again with the Android picker.');
     }
-
-    let expectedSourceUri: string;
-    let selectionDirectoryUri: string;
-    try {
-      expectedSourceUri = this.layout.pickedSourceUri(
-        selection.selectionId,
-        selection.sourceExtension,
-      );
-      selectionDirectoryUri = this.layout.pickedSelectionDirectoryUri(selection.selectionId);
-    } catch (error) {
-      this.discardSelection(selection);
-      throw importError(
-        'E_INVALID_LOCAL_URI',
-        'The selected video has invalid app-owned storage metadata.',
-        {},
-        error,
-      );
-    }
-
-    if (
-      selection.uri !== expectedSourceUri ||
-      !isFileUriWithinDirectory(selection.uri, selectionDirectoryUri)
-    ) {
-      this.discardSelection(selection);
-      throw importError(
-        'E_INVALID_LOCAL_URI',
-        'The selected video is not in its TempoLoop-owned Cache directory.',
-      );
-    }
-
-    if (!isPositiveByteCount(selection.sizeBytes)) {
-      this.discardSelection(selection);
-      throw importError(
-        'E_FILE_SIZE_UNAVAILABLE',
-        'The selected video size could not be determined.',
-      );
-    }
-
-    if (
-      !this.layout.fileSystem.fileExists(selection.uri) ||
-      this.layout.fileSystem.fileSize(selection.uri) !== selection.sizeBytes
-    ) {
-      this.discardSelection(selection);
-      throw importError(
-        'E_FILE_SIZE_UNAVAILABLE',
-        'The app-owned selected video is missing or its size changed.',
-      );
-    }
-
-    if (!isWithinVideoSizeLimit(selection.sizeBytes)) {
-      this.discardSelection(selection);
-      throw importError('E_VIDEO_TOO_LARGE', 'The selected video exceeds the import size limit.', {
-        sizeBytes: selection.sizeBytes,
-        maxSizeBytes: MAX_VIDEO_BYTES,
-      });
-    }
+    this.validateSizeHint(selection.sizeBytes, selection.sourceKindHint);
   }
 
-  private async adoptPickedSource(
-    pickerSourceUri: string,
-    selectionId: string,
-    sourceExtension: string,
-  ): Promise<{ readonly uri: string; readonly sizeBytes: number }> {
-    const ownedSourceUri = this.layout.pickedSourceUri(selectionId, sourceExtension);
-
-    try {
-      await this.layout.fileSystem.moveFile(pickerSourceUri, ownedSourceUri);
-
-      if (!this.layout.fileSystem.fileExists(ownedSourceUri)) {
-        throw importError(
-          'E_FILE_SIZE_UNAVAILABLE',
-          'The app-owned picker copy is missing after it was moved.',
-        );
-      }
-
-      const movedSize = this.layout.fileSystem.fileSize(ownedSourceUri);
-      if (!isPositiveByteCount(movedSize)) {
-        throw importError(
-          'E_FILE_SIZE_UNAVAILABLE',
-          'The app-owned picker copy is empty after it was moved.',
-        );
-      }
-
-      this.validateVideoSizeAndDisk(movedSize);
-      return {
-        uri: ownedSourceUri,
-        sizeBytes: movedSize,
-      };
-    } catch (error) {
-      if (error instanceof ImportCoordinatorError) {
-        throw error;
-      }
+  private validateSizeHint(sizeBytes: number | null, sourceKind: SourceMediaKind): void {
+    if (sizeBytes === null) {
+      return;
+    }
+    if (!Number.isSafeInteger(sizeBytes) || sizeBytes <= 0) {
       throw importError(
         'E_PICKER_RESULT_INVALID',
-        'The selected video could not be moved into TempoLoop-owned Cache storage.',
-        {},
-        error,
+        'The document picker returned invalid source metadata.',
       );
     }
-  }
-
-  private preparePickedSourceMarker(selectionId: string, pickerSourceUri: string): void {
-    const marker: PickedSourceMarkerFile = {
-      schemaVersion: 1,
-      pickerSourceUri,
-    };
-    const selectionDirectoryUri = this.layout.pickedSelectionDirectoryUri(selectionId);
-
-    this.layout.ensureBaseDirectories();
-    this.layout.fileSystem.ensureDirectory(selectionDirectoryUri);
-    this.layout.fileSystem.writeText(
-      this.layout.pickedSourceMarkerUri(selectionId),
-      JSON.stringify(PickedSourceMarkerSchema.parse(marker)),
-    );
-  }
-
-  private cleanupPickerSourceAfterFailedOwnership(
-    pickerSourceUri: string,
-    selectionId: string,
-  ): void {
-    const cleanupResult = this.tryCleanupPickedFile(pickerSourceUri);
-    if (cleanupResult !== null) {
-      this.tryCleanupOwnedSelection(selectionId);
-    }
-  }
-
-  private determineFileSize(reportedSize: number | undefined, uri: string): number {
-    if (isPositiveByteCount(reportedSize)) {
-      return reportedSize;
-    }
-
-    try {
-      const fallbackSize = this.fileAccess.getFileSize(uri);
-      if (isPositiveByteCount(fallbackSize)) {
-        return fallbackSize;
-      }
-    } catch (error) {
+    const maxSizeBytes = sourceKind === 'audio' ? MAX_AUDIO_BYTES : MAX_VIDEO_BYTES;
+    if (sizeBytes > maxSizeBytes) {
       throw importError(
-        'E_FILE_SIZE_UNAVAILABLE',
-        'The selected video size could not be read.',
-        {},
-        error,
-      );
-    }
-
-    throw importError(
-      'E_FILE_SIZE_UNAVAILABLE',
-      'The selected video size could not be determined.',
-    );
-  }
-
-  private validateVideoSizeAndDisk(sizeBytes: number): void {
-    if (!isWithinVideoSizeLimit(sizeBytes)) {
-      throw importError('E_VIDEO_TOO_LARGE', 'The selected video exceeds the import size limit.', {
-        sizeBytes,
-        maxSizeBytes: MAX_VIDEO_BYTES,
-      });
-    }
-
-    const requiredBytes = requiredFreeSpaceForImport(sizeBytes);
-    let availableBytes: number;
-    try {
-      availableBytes = this.fileAccess.getAvailableDiskSpace();
-    } catch (error) {
-      throw importError(
-        'E_INSUFFICIENT_STORAGE',
-        'Available disk space could not be determined safely.',
-        { requiredBytes },
-        error,
-      );
-    }
-
-    if (!hasEnoughFreeSpace(availableBytes, sizeBytes)) {
-      throw importError(
-        'E_INSUFFICIENT_STORAGE',
-        'There is not enough free storage to import this video safely.',
+        sourceKind === 'audio' ? 'E_AUDIO_TOO_LARGE' : 'E_VIDEO_TOO_LARGE',
+        `The selected ${sourceKind} exceeds its size limit.`,
         {
-          availableBytes: Number.isFinite(availableBytes) ? availableBytes : undefined,
-          requiredBytes,
+          sizeBytes,
+          maxSizeBytes,
         },
       );
     }
   }
 
-  private validateWaveform(amplitudes: number[], durationMs: number): WaveformFile {
-    try {
-      return WaveformFileSchema.parse({
-        schemaVersion: 1,
-        pointCount: WAVEFORM_POINT_COUNT,
-        durationMs,
-        amplitudes,
-      });
-    } catch (error) {
-      throw importError(
-        'E_WAVEFORM_INVALID',
-        'DanceAudio returned invalid waveform data.',
-        {},
-        error,
-      );
+  private validateInspection(inspection: MediaInspection): void {
+    if (inspection.sourceSizeBytes !== null) {
+      this.validateSizeHint(inspection.sourceSizeBytes, inspection.sourceKind);
     }
   }
 
-  private async validatePersistedWaveform(waveformUri: string, durationMs: number): Promise<void> {
-    try {
-      const raw: unknown = JSON.parse(await this.layout.fileSystem.readText(waveformUri));
-      const waveform = WaveformFileSchema.parse(raw);
-      if (waveform.durationMs !== durationMs) {
-        throw new Error('The persisted waveform duration does not match the audio.');
-      }
-    } catch (error) {
+  private validateNativeResult(result: ImportMediaResult, expectedAudioUri: string): void {
+    if (result.audioUri !== expectedAudioUri) {
       throw importError(
-        'E_WAVEFORM_INVALID',
-        'The staged waveform file failed validation.',
-        {},
-        error,
+        'E_NATIVE_RESULT_INVALID',
+        'The native media module returned an unexpected audio destination.',
       );
     }
   }
@@ -719,54 +671,51 @@ export class ImportCoordinator {
       this.activeImport !== active ||
       active.finished ||
       active.cancelRequested ||
-      event.taskId !== active.taskId
+      event.operationId !== active.operationId
     ) {
       return;
     }
-
-    this.emitProgress(active, event.phase, clampProgress(event.progress));
+    this.emitProgress(active, event);
   }
 
-  private emitProgress(active: ActiveImport, phase: ImportUiPhase, progress: number): void {
+  private emitProgress(active: ActiveImport, event: ImportProgressEvent): void {
     if (this.activeImport !== active || active.finished) {
       return;
     }
-
+    const stageProgress = clampProgress(event.stageProgress);
+    const overallProgress = clampProgress(event.overallProgress);
+    if (active.diagnosticStage !== event.stage) {
+      active.diagnosticStage = event.stage;
+      this.diagnostics.recordImportStage({
+        operationId: active.operationId,
+        stage: event.stage,
+        stageProgress,
+        overallProgress,
+      });
+    }
+    this.importState.updateProgress(active.operationId, {
+      stage: event.stage,
+      stageProgress,
+      overallProgress,
+    });
     try {
       active.onProgress?.({
-        taskId: active.taskId,
-        phase,
-        progress: clampProgress(progress),
+        taskId: active.operationId,
+        operationId: active.operationId,
+        phase: uiPhase(event.stage),
+        stage: event.stage,
+        progress: overallProgress ?? stageProgress ?? 0,
+        stageProgress,
+        overallProgress,
       });
     } catch {
-      // A rendering callback cannot be allowed to abort the import transaction.
+      // Rendering callbacks cannot abort a native transaction.
     }
   }
 
   private throwIfCancelled(active: ActiveImport): void {
     if (active.cancelRequested) {
       throw cancelledError();
-    }
-  }
-
-  private tryCleanupOwnedSelection(selectionId: string): void {
-    try {
-      this.layout.fileSystem.deleteDirectory(this.layout.pickedSelectionDirectoryUri(selectionId));
-    } catch {
-      // The next repository recovery removes all abandoned Picked directories.
-    }
-  }
-
-  private tryCleanupPickedFile(uri: string): CacheFileCleanupResult | null {
-    if (isFileUriWithinDirectory(uri, this.layout.cacheRootUri)) {
-      return 'not-owned';
-    }
-
-    try {
-      return this.fileAccess.deleteCacheFileIfOwned(uri);
-    } catch {
-      // Callers with a marker preserve it so launch recovery can retry safely.
-      return null;
     }
   }
 }

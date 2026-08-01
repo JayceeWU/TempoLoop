@@ -76,6 +76,26 @@ describe('DevelopmentLog', () => {
     expect(serialized).not.toContain('29');
   });
 
+  test('never retains names, opaque source URIs, filenames, or waveform data', () => {
+    const log = new DevelopmentLog({ enabled: true, now: () => FIXED_DATE });
+    log.record('error', 'import.operation.failed', {
+      projectName: 'Private Rehearsal',
+      sourceDisplayName: 'private-video.mov',
+      sourceUri: 'content://private.provider/video/42',
+      fileName: 'private-video.mov',
+      waveform: [0.1, 0.2, 0.3],
+      samples: [0.4, 0.5],
+      code: 'E_SOURCE_UNREADABLE',
+    });
+
+    const serialized = JSON.stringify(log.getEntries());
+    expect(serialized).toContain('E_SOURCE_UNREADABLE');
+    expect(serialized).toContain('<content-uri>');
+    expect(serialized).not.toContain('Private Rehearsal');
+    expect(serialized).not.toContain('private-video.mov');
+    expect(serialized).not.toContain('0.1');
+  });
+
   test('is inert when development logging is disabled', () => {
     const log = new DevelopmentLog({ enabled: false });
     const listener = jest.fn();
@@ -97,7 +117,7 @@ describe('DevelopmentLog', () => {
 });
 
 describe('DevelopmentDiagnosticState', () => {
-  test('tracks stable native and import codes while ignoring cancellation', () => {
+  test('tracks stable media and import codes while ignoring silent outcomes', () => {
     const log = new DevelopmentLog({
       capacity: 10,
       enabled: true,
@@ -105,32 +125,32 @@ describe('DevelopmentDiagnosticState', () => {
     });
     const state = new DevelopmentDiagnosticState({ enabled: true, log });
 
-    state.recordNativeError(
-      Object.assign(new Error('Failed at file:///private/audio.m4a'), {
-        code: 'E_PLAYBACK_FAILED',
+    state.recordMediaError(
+      Object.assign(new Error('Private Rehearsal at content://private/video'), {
+        code: 'E_AUDIO_LOAD_FAILED',
       }),
-      'playRange',
+      'validateAudio',
     );
     state.recordImportError(
       Object.assign(new Error('Too large'), { code: 'E_VIDEO_TOO_LARGE' }),
       'selectVideo',
     );
     state.recordImportError(
-      Object.assign(new Error('Cancelled'), { code: 'E_CANCELLED' }),
+      Object.assign(new Error('Cancelled'), { code: 'E_IMPORT_CANCELLED' }),
       'importProject',
     );
-    state.recordNativeError(Object.assign(new Error('Cancelled'), { code: 'E_CANCELLED' }), 'seek');
 
     expect(state.getSnapshot()).toEqual({
-      lastNativeErrorCode: 'E_PLAYBACK_FAILED',
+      lastMediaErrorCode: 'E_AUDIO_LOAD_FAILED',
       lastImportErrorCode: 'E_VIDEO_TOO_LARGE',
     });
     expect(log.getEntries()).toHaveLength(2);
-    expect(JSON.stringify(log.getEntries())).not.toContain('private/audio');
+    expect(JSON.stringify(log.getEntries())).not.toContain('Private Rehearsal');
+    expect(JSON.stringify(log.getEntries())).not.toContain('content://');
 
     state.clear();
     expect(state.getSnapshot()).toEqual({
-      lastNativeErrorCode: null,
+      lastMediaErrorCode: null,
       lastImportErrorCode: null,
     });
   });
@@ -140,10 +160,10 @@ describe('DevelopmentDiagnosticState', () => {
     const log = new DevelopmentLog({ enabled: true });
     const state = new DevelopmentDiagnosticState({ enabled: true, log });
 
-    state.recordNativeError({ code: '../../../secret' }, 'healthCheck');
+    state.recordMediaError({ code: '../../../secret' }, 'healthCheck');
     entries.push(...log.getEntries());
 
-    expect(state.getSnapshot().lastNativeErrorCode).toBe('E_UNKNOWN');
+    expect(state.getSnapshot().lastMediaErrorCode).toBe('E_UNKNOWN');
     expect(entries[0]?.context).toMatchObject({ code: 'E_UNKNOWN' });
   });
 });
