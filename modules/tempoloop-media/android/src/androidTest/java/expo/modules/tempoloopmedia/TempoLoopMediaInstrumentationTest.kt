@@ -138,8 +138,13 @@ class TempoLoopMediaInstrumentationTest {
     assertEquals(SourceMediaKind.AUDIO, inspection.sourceKind)
 
     val output = File(outputRoot, "direct-audio-output.m4a.partial")
-    val (result, _) = importFixture(sourceUri, output)
+    // java.io.File intentionally formats this as file:/... while Android's
+    // Uri.fromFile formats the same canonical path as file:///.... The native
+    // result must preserve the caller's validated contract URI exactly.
+    val requestedOutputUri = output.toURI().toString()
+    val (result, _) = importFixture(sourceUri, output, requestedOutputUri)
 
+    assertEquals(requestedOutputUri, result.audioUri)
     assertTrue(result.audioSizeBytes > 0L)
     assertEquals(WAVEFORM_BIN_COUNT, result.waveform.size)
     assertTrue(result.waveform.all { it.isFinite() && it in 0.0..1.0 })
@@ -233,7 +238,8 @@ class TempoLoopMediaInstrumentationTest {
 
   private suspend fun importFixture(
     sourceUri: String,
-    output: File
+    output: File,
+    outputAudioUri: String = Uri.fromFile(output).toString()
   ): Pair<ImportMediaResult, List<ImportProgressEvent>> = coroutineScope {
     val operationId = "instrumentation-${UUID.randomUUID()}"
     val taskRegistry = NativeTaskRegistry()
@@ -255,7 +261,7 @@ class TempoLoopMediaInstrumentationTest {
         ImportMediaOptions(
           operationId = operationId,
           sourceUri = sourceUri,
-          outputAudioUri = Uri.fromFile(output).toString(),
+          outputAudioUri = outputAudioUri,
           waveformBinCount = WAVEFORM_BIN_COUNT,
           maxAudioSourceBytes = MAX_AUDIO_SOURCE_BYTES,
           maxVideoSourceBytes = MAX_VIDEO_SOURCE_BYTES

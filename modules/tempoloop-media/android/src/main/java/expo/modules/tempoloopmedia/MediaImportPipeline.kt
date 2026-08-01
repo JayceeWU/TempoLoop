@@ -1,7 +1,6 @@
 package expo.modules.tempoloopmedia
 
 import android.content.Context
-import android.net.Uri
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.NonCancellable
@@ -128,7 +127,12 @@ internal class MediaImportPipeline(
 
         stateMachine.transition(ImportOperationState.COMPLETED)
         ImportMediaResult(
-          audioUri = Uri.fromFile(outputFile).toString(),
+          // PrivateOutputPath already parsed, canonicalized, and constrained
+          // this exact caller-provided URI to app-private storage. Return the
+          // contract value verbatim instead of rebuilding an equivalent URI
+          // with Android Uri, which can change file:/ vs file:/// formatting
+          // and make the TypeScript destination-integrity check fail.
+          audioUri = options.outputAudioUri,
           audioSizeBytes = validatedOutput.sizeBytes,
           durationMs = validatedOutput.durationMs,
           waveform = waveform

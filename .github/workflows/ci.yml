@@ -95,13 +95,17 @@ jobs:
         run: chmod +x android/gradlew
 
       - name: Run Kotlin unit tests
-        run: ./android/gradlew testDebugUnitTest
+        working-directory: android
+        run: ./gradlew testDebugUnitTest --stacktrace --no-daemon
 
       - name: Verify Media3 versions
-        run: ./android/gradlew verifyMedia3Versions
+        working-directory: android
+        run: ./gradlew verifyMedia3Versions --stacktrace --no-daemon
 
       - name: Assemble debug APK
-        run: ./android/gradlew assembleDebug
+        working-directory: android
+        run: ./gradlew assembleDebug --stacktrace --no-daemon
 
       - name: Compile Android instrumentation tests
-        run: ./android/gradlew assembleDebugAndroidTest
+        working-directory: android
+        run: ./gradlew assembleDebugAndroidTest --stacktrace --no-daemon
