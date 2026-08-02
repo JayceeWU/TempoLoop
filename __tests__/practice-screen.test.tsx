@@ -11,6 +11,8 @@ import { useProjectStore } from '@/stores/useProjectStore';
 
 const mockRouterBack = jest.fn();
 const mockRouterPush = jest.fn();
+const mockRouterReplace = jest.fn();
+let mockCanGoBack = true;
 const mockEnterPractice = jest.fn<
   ReturnType<TempoLoopPlayerController['enterPractice']>,
   Parameters<TempoLoopPlayerController['enterPractice']>
@@ -27,6 +29,7 @@ const mockPause = jest.fn();
 const mockSetRate = jest.fn<boolean, [PlaybackRate]>();
 const mockDeactivate = jest.fn();
 const mockUpdateSelectedRate = jest.fn(async () => undefined);
+const mockUpdateLeadInMs = jest.fn(async () => undefined);
 const mockInitialize = jest.fn(async () => undefined);
 
 let mockRouteParams: { projectId?: string | string[] } = { projectId: 'project-1' };
@@ -56,7 +59,9 @@ jest.mock('expo-router', () => {
     Stack,
     router: {
       back: () => mockRouterBack(),
+      canGoBack: () => mockCanGoBack,
       push: (href: unknown) => mockRouterPush(href),
+      replace: (href: unknown) => mockRouterReplace(href),
     },
     useFocusEffect: (effect: () => void | (() => void)) => ReactModule.useEffect(effect, [effect]),
     useLocalSearchParams: () => mockRouteParams,
@@ -91,10 +96,12 @@ const PROJECT: DanceProject = {
   updatedAtIso: '2026-07-30T12:00:00.000Z',
   audioFileName: 'audio.m4a',
   waveformFileName: 'waveform.json',
+  waveformStatus: 'ready',
   durationMs: 90_000,
   sourceDisplayName: null,
   sourceSizeBytes: 1_024,
   selectedRate: 1,
+  leadInMs: 6_000,
   segments: [
     { id: 'segment-1', index: 0, startMs: 10_000, endMs: 20_000 },
     { id: 'segment-2', index: 1, startMs: 30_000, endMs: 40_000 },
@@ -186,7 +193,7 @@ async function renderPrepared(project: DanceProject = PROJECT) {
   await waitFor(() => {
     expect(mockPreparePracticeSegment).toHaveBeenCalledWith({
       segmentIndex: 0,
-      clipStartMs: 4_000,
+      clipStartMs: Math.max(0, 10_000 - project.leadInMs),
       clipEndMs: 20_000,
       rate: project.selectedRate,
     });
@@ -198,6 +205,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockSnapshotListeners.clear();
   mockSnapshot = idleSnapshot();
+  mockCanGoBack = true;
   mockRouteParams = { projectId: PROJECT.id };
   jest
     .spyOn(projectRepository, 'resolveAudioUri')
@@ -211,6 +219,7 @@ beforeEach(() => {
     error: null,
     initialize: mockInitialize,
     updateSelectedRate: mockUpdateSelectedRate,
+    updateLeadInMs: mockUpdateLeadInMs,
   });
   installPlayerBehavior();
 });
@@ -220,6 +229,17 @@ afterEach(() => {
 });
 
 describe('Android practice project screen', () => {
+  it('returns a root project route to the project list without dispatching GO_BACK', async () => {
+    mockCanGoBack = false;
+    const screen = await renderPrepared();
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Back to projects' }));
+
+    expect(mockPause).toHaveBeenCalled();
+    expect(mockRouterBack).not.toHaveBeenCalled();
+    expect(mockRouterReplace).toHaveBeenCalledWith('/');
+  });
+
   it('enters the shared player and prepares the first valid segment at its lead-in', async () => {
     const screen = await renderPrepared();
 
@@ -235,6 +255,18 @@ describe('Android practice project screen', () => {
       screen.getByRole('button', { name: /Segment 1/ }).props.accessibilityState,
     ).toMatchObject({ selected: true });
     expect(screen.getByRole('button', { name: 'Play selected segment' })).toBeEnabled();
+  });
+
+  it('places the lead-in slider between speed and segment selection', async () => {
+    const screen = await renderPrepared();
+    const rendered = JSON.stringify(screen.toJSON());
+    const speedIndex = rendered.indexOf('Playback speed');
+    const leadInIndex = rendered.indexOf('Start before segment');
+    const segmentsIndex = rendered.indexOf('Practice segments');
+
+    expect(speedIndex).toBeGreaterThanOrEqual(0);
+    expect(leadInIndex).toBeGreaterThan(speedIndex);
+    expect(segmentsIndex).toBeGreaterThan(leadInIndex);
   });
 
   it('keeps Play disabled when no segment is configured', async () => {
@@ -287,10 +319,17 @@ describe('Android practice project screen', () => {
     await waitFor(() => expect(mockUpdateSelectedRate).toHaveBeenCalledWith(PROJECT.id, 0.8));
   });
 
-  it('delegates play and pause toggles to the coordinator', async () => {
+  it('starts from the range beginning and resets there when Pause is pressed', async () => {
     const screen = await renderPrepared();
+    mockPreparePracticeSegment.mockClear();
 
     await fireEvent.press(screen.getByRole('button', { name: 'Play selected segment' }));
+    expect(mockPreparePracticeSegment).toHaveBeenLastCalledWith({
+      segmentIndex: 0,
+      clipStartMs: 4_000,
+      clipEndMs: 20_000,
+      rate: 1,
+    });
     expect(mockTogglePractice).toHaveBeenCalledTimes(1);
     await waitFor(() => {
       expect(screen.getByRole('button', { name: 'Pause playback' })).toBeTruthy();
@@ -300,7 +339,87 @@ describe('Android practice project screen', () => {
       jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 200);
     });
     await fireEvent.press(screen.getByRole('button', { name: 'Pause playback' }));
-    expect(mockTogglePractice).toHaveBeenCalledTimes(2);
+    expect(mockPreparePracticeSegment).toHaveBeenCalledTimes(2);
+    expect(mockPreparePracticeSegment).toHaveBeenLastCalledWith({
+      segmentIndex: 0,
+      clipStartMs: 4_000,
+      clipEndMs: 20_000,
+      rate: 1,
+    });
+    expect(mockTogglePractice).toHaveBeenCalledTimes(1);
+    expect(mockSnapshot.status).toBe('ready');
+    expect(mockSnapshot.sourcePositionMs).toBe(4_000);
+  });
+
+  it('changes lead-in without interrupting playback and uses it on the next Pause', async () => {
+    const screen = await renderPrepared();
+    await act(() => {
+      mockPatchSnapshot({ status: 'playing', sourcePositionMs: 12_500 });
+    });
+    mockPreparePracticeSegment.mockClear();
+    mockPause.mockClear();
+
+    await fireEvent(
+      screen.getByRole('adjustable', { name: 'Seconds before segment start' }),
+      'accessibilityAction',
+      { nativeEvent: { actionName: 'decrement' } },
+    );
+
+    expect(screen.getByText('Start before segment · 4 seconds')).toBeTruthy();
+    expect(mockSnapshot.status).toBe('playing');
+    expect(mockSnapshot.sourcePositionMs).toBe(12_500);
+    expect(mockPreparePracticeSegment).not.toHaveBeenCalled();
+    expect(mockPause).not.toHaveBeenCalled();
+    await waitFor(() => expect(mockUpdateLeadInMs).toHaveBeenCalledWith(PROJECT.id, 4_000));
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Pause playback' }));
+    expect(mockPreparePracticeSegment).toHaveBeenCalledWith({
+      segmentIndex: 0,
+      clipStartMs: 6_000,
+      clipEndMs: 20_000,
+      rate: 1,
+    });
+    expect(mockTogglePractice).not.toHaveBeenCalled();
+  });
+
+  it('shows an error if the lead-in preference cannot be saved', async () => {
+    mockUpdateLeadInMs.mockRejectedValueOnce(new Error('write failed'));
+    const screen = await renderPrepared();
+
+    await fireEvent(
+      screen.getByRole('adjustable', { name: 'Seconds before segment start' }),
+      'accessibilityAction',
+      { nativeEvent: { actionName: 'decrement' } },
+    );
+
+    await waitFor(() => {
+      expect(Alert.alert).toHaveBeenCalledWith(
+        'Preference could not be saved',
+        'The current choice works for this session, but TempoLoop could not save it.',
+      );
+    });
+  });
+
+  it('prepares the lead-in again before manual Play after an interruption', async () => {
+    const project = { ...PROJECT, leadInMs: 2_000 as const };
+    const screen = await renderPrepared(project);
+    mockPreparePracticeSegment.mockClear();
+    await act(() => {
+      mockPatchSnapshot({ status: 'paused', sourcePositionMs: 17_000 });
+    });
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Play selected segment' }));
+
+    expect(mockPreparePracticeSegment).toHaveBeenCalledWith({
+      segmentIndex: 0,
+      clipStartMs: 8_000,
+      clipEndMs: 20_000,
+      rate: 1,
+    });
+    expect(mockPreparePracticeSegment.mock.invocationCallOrder[0]).toBeLessThan(
+      mockTogglePractice.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER,
+    );
+    expect(mockSnapshot.status).toBe('playing');
   });
 
   it('pauses before opening settings and deactivates on route exit', async () => {

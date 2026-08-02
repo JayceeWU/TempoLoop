@@ -49,6 +49,16 @@ function createPlayer(
   return player;
 }
 
+async function waitForListeners(
+  listeners: ReadonlyArray<(value: AudioStatus) => void>,
+  count: number,
+): Promise<void> {
+  for (let attempt = 0; attempt < 10 && listeners.length < count; attempt += 1) {
+    await Promise.resolve();
+  }
+  expect(listeners).toHaveLength(count);
+}
+
 describe('ExpoAudioPartialValidator', () => {
   it('borrows the provider player and never owns its release', async () => {
     const player = createPlayer((source, emit) => {
@@ -83,6 +93,9 @@ describe('ExpoAudioPartialValidator', () => {
     const validator = new ExpoAudioPartialValidator({ createPlayer: createPlayerMock });
 
     await validator.validateLoadable('file:///private/audio-one.m4a.partial');
+    // ImportCoordinator also performs best-effort cleanup in finally. It must
+    // not send a second replace(null) into the shared Android player.
+    validator.clearSource('file:///private/audio-one.m4a.partial');
     await validator.validateLoadable('file:///private/audio-two.m4a.partial');
 
     expect(createPlayerMock).toHaveBeenCalledTimes(1);
@@ -90,6 +103,28 @@ describe('ExpoAudioPartialValidator', () => {
     expect(player.replace).toHaveBeenNthCalledWith(2, null);
     expect(player.replace).toHaveBeenNthCalledWith(3, 'file:///private/audio-two.m4a.partial');
     expect(player.replace).toHaveBeenNthCalledWith(4, null);
+  });
+
+  it('ignores a removed listener from an older validation generation', async () => {
+    const listeners: Array<(value: AudioStatus) => void> = [];
+    const player = createPlayer(() => undefined);
+    player.addListener = jest.fn((_name, listener) => {
+      listeners.push(listener);
+      return { remove: jest.fn() };
+    });
+    const validator = new ExpoAudioPartialValidator({ createPlayer: () => player });
+
+    const first = validator.validateLoadable('file:///private/audio-one.m4a.partial');
+    await waitForListeners(listeners, 1);
+    listeners[0]?.(status({ isLoaded: true, duration: 90 }));
+    await first;
+
+    const second = validator.validateLoadable('file:///private/audio-two.m4a.partial');
+    await waitForListeners(listeners, 2);
+    listeners[0]?.(status({ error: 'late failure from source one' }));
+    listeners[1]?.(status({ isLoaded: true, duration: 91 }));
+
+    await expect(second).resolves.toBeUndefined();
   });
 
   it('maps expo-audio load errors to the stable media error code', async () => {
@@ -102,7 +137,10 @@ describe('ExpoAudioPartialValidator', () => {
 
     await expect(
       validator.validateLoadable('file:///private/audio.m4a.partial'),
-    ).rejects.toMatchObject({ code: 'E_AUDIO_LOAD_FAILED' });
+    ).rejects.toMatchObject({
+      code: 'E_AUDIO_LOAD_FAILED',
+      loadFailureStage: 'native-status',
+    });
     expect(player.replace).toHaveBeenLastCalledWith(null);
   });
 
@@ -116,7 +154,7 @@ describe('ExpoAudioPartialValidator', () => {
     try {
       await expect(
         validator.validateLoadable('file:///private/audio.m4a.partial'),
-      ).rejects.toMatchObject({ code: 'E_AUDIO_LOAD_FAILED' });
+      ).rejects.toMatchObject({ code: 'E_AUDIO_LOAD_FAILED', loadFailureStage: 'prepare' });
       expect(createPlayerMock).not.toHaveBeenCalled();
     } finally {
       unregisterPreparation();
@@ -136,7 +174,7 @@ describe('ExpoAudioPartialValidator', () => {
 
     await expect(
       validator.validateLoadable('file:///private/unloadable.m4a.partial'),
-    ).rejects.toMatchObject({ code: 'E_AUDIO_LOAD_FAILED' });
+    ).rejects.toMatchObject({ code: 'E_AUDIO_LOAD_FAILED', loadFailureStage: 'timeout' });
     expect(player.replace).toHaveBeenLastCalledWith(null);
   });
 
@@ -156,5 +194,19 @@ describe('ExpoAudioPartialValidator', () => {
     ).rejects.toMatchObject({ code: 'E_AUDIO_LOAD_FAILED' });
     validator.clearSource();
     await expect(first).rejects.toMatchObject({ code: 'E_AUDIO_LOAD_FAILED' });
+  });
+
+  it('classifies synchronous player replacement failures without leaking their message', async () => {
+    const player = createPlayer((source) => {
+      if (source !== null) {
+        throw new Error('file:///private/audio.m4a.partial decoder details');
+      }
+    });
+    const validator = new ExpoAudioPartialValidator({ createPlayer: () => player });
+
+    await expect(
+      validator.validateLoadable('file:///private/audio.m4a.partial'),
+    ).rejects.toMatchObject({ code: 'E_AUDIO_LOAD_FAILED', loadFailureStage: 'replace' });
+    expect(player.replace).toHaveBeenLastCalledWith(null);
   });
 });

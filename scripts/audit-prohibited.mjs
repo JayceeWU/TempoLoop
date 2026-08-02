@@ -76,6 +76,21 @@ if (
   violations.push('expo-audio: Android noisy-output pause is not configured');
 }
 
+const expoAudioModulePath = path.join(
+  repositoryRoot,
+  'node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioModule.kt',
+);
+const expoAudioModuleSource = fs.existsSync(expoAudioModulePath)
+  ? fs.readFileSync(expoAudioModulePath, 'utf8')
+  : '';
+if (
+  !expoAudioModuleSource.includes('// AudioSource explicitly includes null.') ||
+  !expoAudioModuleSource.includes('player.ref.stop()') ||
+  !expoAudioModuleSource.includes('player.ref.clearMediaItems()')
+) {
+  violations.push('expo-audio: Android replace(null) does not clear the Media3 source');
+}
+
 const retainedModuleConfig = JSON.parse(
   fs.readFileSync(path.join(repositoryRoot, 'modules/dance-audio/expo-module.config.json'), 'utf8'),
 );

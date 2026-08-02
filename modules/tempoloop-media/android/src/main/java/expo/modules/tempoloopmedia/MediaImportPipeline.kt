@@ -13,7 +13,6 @@ internal class MediaImportPipeline(
   context: Context,
   private val ioDispatcher: CoroutineDispatcher,
   private val mediaInspector: MediaInspector,
-  private val waveformGenerator: WaveformGenerator,
   private val audioExporter: Media3AudioExporter,
   private val taskRegistry: NativeTaskRegistry,
   private val progressSink: ImportProgressSink,
@@ -100,19 +99,6 @@ internal class MediaImportPipeline(
         val exportedOutput = ExportedAudioValidator.validate(outputFile)
         progress.completeStage()
 
-        stateMachine.transition(ImportOperationState.WAVEFORM)
-        progress.begin(ImportStage.WAVEFORM)
-        val waveform = waveformGenerator.generate(
-          audioFile = outputFile,
-          durationMs = exportedOutput.durationMs,
-          binCount = options.waveformBinCount,
-          onProgress = { value -> progress.update(value) },
-          cancellationCheck = { checkCancellationSignal(options.operationId) }
-        )
-        validateWaveform(waveform, options.waveformBinCount)
-        checkCancellation(options.operationId)
-        progress.completeStage()
-
         stateMachine.transition(ImportOperationState.FINALIZING)
         progress.begin(ImportStage.FINALIZING)
         val validatedOutput = ExportedAudioValidator.validate(outputFile)
@@ -134,8 +120,7 @@ internal class MediaImportPipeline(
           // and make the TypeScript destination-integrity check fail.
           audioUri = options.outputAudioUri,
           audioSizeBytes = validatedOutput.sizeBytes,
-          durationMs = validatedOutput.durationMs,
-          waveform = waveform
+          durationMs = validatedOutput.durationMs
         ).also {
           completed = true
         }
@@ -191,9 +176,7 @@ internal class MediaImportPipeline(
   private fun validateOptions(options: ImportMediaOptions): ParsedSourceUri {
     if (
       options.operationId.isBlank() ||
-      options.operationId.any(Char::isISOControl) ||
-      options.waveformBinCount <= 0 ||
-      options.waveformBinCount > MAX_WAVEFORM_BIN_COUNT
+      options.operationId.any(Char::isISOControl)
     ) {
       throw mediaError(TempoLoopMediaError.UNKNOWN_NATIVE)
     }
@@ -231,17 +214,7 @@ internal class MediaImportPipeline(
     return !outputFile.exists()
   }
 
-  private fun validateWaveform(waveform: List<Double>, expectedBinCount: Int) {
-    if (
-      waveform.size != expectedBinCount ||
-      waveform.any { sample -> !sample.isFinite() || sample !in 0.0..1.0 }
-    ) {
-      throw mediaError(TempoLoopMediaError.WAVEFORM_FAILED)
-    }
-  }
-
   private companion object {
-    const val MAX_WAVEFORM_BIN_COUNT = 16_384
     const val PARTIAL_DELETE_ATTEMPTS = 3
   }
 }

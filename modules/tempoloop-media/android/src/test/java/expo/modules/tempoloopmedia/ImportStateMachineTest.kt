@@ -11,7 +11,6 @@ class ImportStateMachineTest {
 
     machine.transition(ImportOperationState.INSPECTING)
     machine.transition(ImportOperationState.EXPORTING)
-    machine.transition(ImportOperationState.WAVEFORM)
     machine.transition(ImportOperationState.FINALIZING)
     machine.transition(ImportOperationState.COMPLETED)
 
@@ -24,7 +23,7 @@ class ImportStateMachineTest {
     machine.transition(ImportOperationState.INSPECTING)
 
     assertThrows(IllegalStateException::class.java) {
-      machine.transition(ImportOperationState.WAVEFORM)
+      machine.transition(ImportOperationState.FINALIZING)
     }
 
     machine.cancel()

@@ -13,12 +13,19 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AppButton } from '@/components/AppButton';
 import { EmptyState } from '@/components/EmptyState';
+import { LeadInSelector } from '@/components/LeadInSelector';
 import { PlaybackButton } from '@/components/PlaybackButton';
 import { SegmentGrid } from '@/components/SegmentGrid';
 import { SpeedSelector } from '@/components/SpeedSelector';
 import { COPY } from '@/constants/copy';
+import { DEFAULT_LEAD_IN_MS } from '@/constants/app';
 import { colors, fontSizes, fontWeights, minimumTapSize, spacing } from '@/constants/theme';
-import { calculatePlaybackRange, type PlaybackRate, type PlaybackRange } from '@/domain/playback';
+import {
+  calculatePlaybackRange,
+  type LeadInMs,
+  type PlaybackRate,
+  type PlaybackRange,
+} from '@/domain/playback';
 import {
   canTogglePracticePlayback,
   getConfiguredPracticeSegment,
@@ -30,6 +37,7 @@ import { type TempoLoopPlayerController, useTempoLoopPlayer } from '@/playback/u
 import { projectRepository } from '@/repositories/ProjectRepository';
 import { useProjectStore } from '@/stores/useProjectStore';
 import { canAcceptPlaybackToggle } from '@/utils/interaction';
+import { navigateBackOrHome } from '@/utils/navigation';
 import { formatSegmentTime } from '@/utils/time';
 
 function projectIdFromParam(value: string | string[] | undefined): string | null {
@@ -63,6 +71,7 @@ export default function PracticeProjectScreen() {
   const isLoadingProjects = useProjectStore((state) => state.isLoading);
   const initializeProjects = useProjectStore((state) => state.initialize);
   const updateSelectedRate = useProjectStore((state) => state.updateSelectedRate);
+  const updateLeadInMs = useProjectStore((state) => state.updateLeadInMs);
   const pendingProjectId = useProjectStore((state) => state.pendingProjectId);
   const projectStoreError = useProjectStore((state) => state.error);
   const player = useTempoLoopPlayer();
@@ -72,7 +81,15 @@ export default function PracticeProjectScreen() {
   const prepareCommandRef = useRef(0);
   const lastPlaybackToggleAtRef = useRef<number | null>(null);
   const initializationRequestedRef = useRef(false);
+  const leadInProjectIdRef = useRef<string | null>(null);
+  const leadInMsRef = useRef<LeadInMs>(DEFAULT_LEAD_IN_MS);
+  const pendingLeadInPreferenceRef = useRef<{
+    projectId: string;
+    leadInMs: LeadInMs;
+  } | null>(null);
+  const leadInPersistenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [selectedSegment, setSelectedSegment] = useState<SegmentIndex | null>(null);
+  const [selectedLeadInMs, setSelectedLeadInMs] = useState<LeadInMs>(DEFAULT_LEAD_IN_MS);
   const [isEntering, setIsEntering] = useState(false);
   const [isPreparingSegment, setIsPreparingSegment] = useState(false);
   const [isToggling, setIsToggling] = useState(false);
@@ -105,7 +122,24 @@ export default function PracticeProjectScreen() {
 
   useEffect(() => {
     projectRef.current = project;
+    if (project !== null && leadInProjectIdRef.current !== project.id) {
+      leadInProjectIdRef.current = project.id;
+      leadInMsRef.current = project.leadInMs;
+      setSelectedLeadInMs(project.leadInMs);
+    }
   }, [project]);
+
+  useEffect(() => {
+    return () => {
+      if (leadInPersistenceTimerRef.current !== null) {
+        clearTimeout(leadInPersistenceTimerRef.current);
+      }
+      const pending = pendingLeadInPreferenceRef.current;
+      if (pending !== null) {
+        void updateLeadInMs(pending.projectId, pending.leadInMs).catch(() => undefined);
+      }
+    };
+  }, [updateLeadInMs]);
 
   const requestProjectInitialization = useCallback(() => {
     if (initializationRequestedRef.current) {
@@ -166,7 +200,7 @@ export default function PracticeProjectScreen() {
       if (segment === null) {
         return;
       }
-      const range = calculatePlaybackRange(segment);
+      const range = calculatePlaybackRange(segment, leadInMsRef.current);
       const prepared = await playerRef.current.preparePracticeSegment({
         segmentIndex: segment.index,
         clipStartMs: range.playFromMs,
@@ -247,7 +281,7 @@ export default function PracticeProjectScreen() {
       const command = prepareCommandRef.current + 1;
       prepareCommandRef.current = command;
       const token = focusTokenRef.current;
-      const range = calculatePlaybackRange(segment);
+      const range = calculatePlaybackRange(segment, leadInMsRef.current);
       setSelectedSegment(segmentIndex);
       setIsPreparingSegment(true);
       setAudioLoadFailed(false);
@@ -294,10 +328,43 @@ export default function PracticeProjectScreen() {
     [isEntering, isOpeningEditor, isPreparingSegment, tokenIsCurrent, updateSelectedRate],
   );
 
+  const handleSelectLeadIn = useCallback(
+    (leadInMs: LeadInMs) => {
+      const currentProject = projectRef.current;
+      if (currentProject === null || isEntering || isOpeningEditor) {
+        return;
+      }
+
+      leadInMsRef.current = leadInMs;
+      setSelectedLeadInMs(leadInMs);
+      pendingLeadInPreferenceRef.current = { projectId: currentProject.id, leadInMs };
+      const token = focusTokenRef.current;
+      if (leadInPersistenceTimerRef.current !== null) {
+        clearTimeout(leadInPersistenceTimerRef.current);
+      }
+      leadInPersistenceTimerRef.current = setTimeout(() => {
+        leadInPersistenceTimerRef.current = null;
+        const pending = pendingLeadInPreferenceRef.current;
+        pendingLeadInPreferenceRef.current = null;
+        if (pending === null) {
+          return;
+        }
+        void updateLeadInMs(pending.projectId, pending.leadInMs).catch(() => {
+          if (tokenIsCurrent(token)) {
+            Alert.alert(COPY.practice.preferenceErrorTitle, COPY.practice.preferenceErrorMessage);
+          }
+        });
+      }, 200);
+    },
+    [isEntering, isOpeningEditor, tokenIsCurrent, updateLeadInMs],
+  );
+
   const configuredSelection =
     project === null ? null : getConfiguredPracticeSegment(project, selectedSegment);
   const selectedRange: PlaybackRange | null =
-    configuredSelection === null ? null : calculatePlaybackRange(configuredSelection);
+    configuredSelection === null
+      ? null
+      : calculatePlaybackRange(configuredSelection, selectedLeadInMs);
   const playerOwnsProject =
     project !== null &&
     player.snapshot.mode === 'practice' &&
@@ -317,15 +384,42 @@ export default function PracticeProjectScreen() {
       return;
     }
     lastPlaybackToggleAtRef.current = acceptedAtMs;
+    const currentProject = projectRef.current;
+    const segment =
+      currentProject === null
+        ? null
+        : getConfiguredPracticeSegment(currentProject, selectedSegment);
+    if (segment === null) {
+      return;
+    }
+    const wasPlaying = playerRef.current.snapshot.status === 'playing';
+    const range = calculatePlaybackRange(segment, leadInMsRef.current);
     const token = focusTokenRef.current;
+    const command = prepareCommandRef.current + 1;
+    prepareCommandRef.current = command;
     setIsToggling(true);
-    void playerRef.current
-      .togglePractice()
+    void (async () => {
+      const prepared = await playerRef.current.preparePracticeSegment({
+        segmentIndex: segment.index,
+        clipStartMs: range.playFromMs,
+        clipEndMs: range.stopAtMs,
+        rate: playerRef.current.snapshot.rate,
+      });
+      if (
+        wasPlaying ||
+        !prepared ||
+        !tokenIsCurrent(token) ||
+        prepareCommandRef.current !== command
+      ) {
+        return;
+      }
+      await playerRef.current.togglePractice();
+    })()
       .catch((error: unknown) => {
         showPlaybackError(error, token);
       })
       .finally(() => {
-        if (tokenIsCurrent(token)) {
+        if (tokenIsCurrent(token) && prepareCommandRef.current === command) {
           setIsToggling(false);
         }
       });
@@ -333,7 +427,7 @@ export default function PracticeProjectScreen() {
 
   const handleBack = useCallback(() => {
     playerRef.current.pause();
-    router.back();
+    navigateBackOrHome();
   }, []);
 
   const handleOpenEditor = useCallback(() => {
@@ -432,6 +526,17 @@ export default function PracticeProjectScreen() {
           disabled={controlsDisabled || isPreparingSegment}
           onSelectRate={handleSelectRate}
           selectedRate={displayRate}
+        />
+
+        <Text style={styles.sectionHeading}>
+          {COPY.practice.leadInHeading} · {COPY.practice.leadInValue(selectedLeadInMs / 1_000)}
+        </Text>
+        <LeadInSelector
+          disabled={
+            !playerOwnsProject || isEntering || isPreparingSegment || isToggling || isOpeningEditor
+          }
+          onSelectLeadIn={handleSelectLeadIn}
+          selectedLeadInMs={selectedLeadInMs}
         />
 
         <Text style={styles.sectionHeading}>{COPY.practice.segmentsHeading}</Text>

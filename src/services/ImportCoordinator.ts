@@ -2,12 +2,7 @@ import * as Crypto from 'expo-crypto';
 import * as DocumentPicker from 'expo-document-picker';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 
-import {
-  MAX_AUDIO_BYTES,
-  MAX_PROJECT_NAME_LENGTH,
-  MAX_VIDEO_BYTES,
-  WAVEFORM_POINT_COUNT,
-} from '@/constants/app';
+import { MAX_AUDIO_BYTES, MAX_PROJECT_NAME_LENGTH, MAX_VIDEO_BYTES } from '@/constants/app';
 import { COPY } from '@/constants/copy';
 import type { DanceProject } from '@/domain/project';
 import { ProjectNameSchema, normalizeProjectName } from '@/domain/validation';
@@ -34,6 +29,7 @@ import {
   type ImportTerminalError,
 } from '@/stores/useImportStore';
 import { useProjectStore } from '@/stores/useProjectStore';
+import { waveformGenerationCoordinator } from '@/services/WaveformGenerationCoordinator';
 import {
   assertImportMediaResult,
   type ImportMediaResult,
@@ -96,7 +92,7 @@ export const AUDIO_DOCUMENT_PICKER_MIME_TYPES = [
   'video/iso.segment',
 ] as const;
 
-export type ImportUiPhase = 'preparing' | 'extracting' | 'waveform' | 'saving';
+export type ImportUiPhase = 'preparing' | 'extracting' | 'saving';
 
 export interface ImportProgressSnapshot {
   /** Compatibility alias for the operation ID used by the current sheet. */
@@ -153,6 +149,10 @@ export interface ImportCoordinatorDependencies {
   readonly refreshProjects?: () => Promise<void>;
   readonly randomUuid?: () => string;
   readonly diagnostics?: StructuredDiagnosticsRecorder;
+  readonly waveformScheduler?: {
+    hasPendingWork(): boolean;
+    enqueueProject(project: DanceProject): void;
+  };
 }
 
 interface ActiveImport {
@@ -245,8 +245,6 @@ function uiPhase(stage: ImportStage): ImportUiPhase {
       return 'preparing';
     case 'exporting':
       return 'extracting';
-    case 'waveform':
-      return 'waveform';
     case 'finalizing':
       return 'saving';
   }
@@ -288,6 +286,10 @@ export class ImportCoordinator {
   private readonly refreshProjects: () => Promise<void>;
   private readonly randomUuid: () => string;
   private readonly diagnostics: StructuredDiagnosticsRecorder;
+  private readonly waveformScheduler: {
+    hasPendingWork(): boolean;
+    enqueueProject(project: DanceProject): void;
+  };
   private activeImport: ActiveImport | null = null;
 
   constructor(dependencies: ImportCoordinatorDependencies = {}) {
@@ -302,6 +304,11 @@ export class ImportCoordinator {
       dependencies.refreshProjects ?? (() => useProjectStore.getState().refresh());
     this.randomUuid = dependencies.randomUuid ?? Crypto.randomUUID;
     this.diagnostics = dependencies.diagnostics ?? structuredDevelopmentDiagnostics;
+    this.waveformScheduler =
+      dependencies.waveformScheduler ??
+      (dependencies.repository === undefined
+        ? waveformGenerationCoordinator
+        : { hasPendingWork: () => false, enqueueProject: () => undefined });
   }
 
   isImportActive(): boolean {
@@ -309,7 +316,11 @@ export class ImportCoordinator {
   }
 
   async selectVideoFromGallery(): Promise<SelectedMedia | null> {
-    if (this.activeImport !== null || !this.importState.tryBeginSelection()) {
+    if (
+      this.activeImport !== null ||
+      this.waveformScheduler.hasPendingWork() ||
+      !this.importState.tryBeginSelection()
+    ) {
       throw importError(
         'E_IMPORT_IN_PROGRESS',
         'Only one TempoLoop media selection or import can run at a time.',
@@ -335,7 +346,11 @@ export class ImportCoordinator {
   }
 
   async selectAudio(): Promise<SelectedMedia | null> {
-    if (this.activeImport !== null || !this.importState.tryBeginSelection()) {
+    if (
+      this.activeImport !== null ||
+      this.waveformScheduler.hasPendingWork() ||
+      !this.importState.tryBeginSelection()
+    ) {
       throw importError(
         'E_IMPORT_IN_PROGRESS',
         'Only one TempoLoop media selection or import can run at a time.',
@@ -383,7 +398,7 @@ export class ImportCoordinator {
   }
 
   async importProject(request: ImportProjectRequest): Promise<DanceProject> {
-    if (this.activeImport !== null) {
+    if (this.activeImport !== null || this.waveformScheduler.hasPendingWork()) {
       throw importError('E_IMPORT_IN_PROGRESS', 'Another TempoLoop import is already running.');
     }
     const normalizedName = ProjectNameSchema.parse(request.name);
@@ -459,24 +474,17 @@ export class ImportCoordinator {
         operationId,
         sourceUri: request.selection.uri,
         outputAudioUri: audioUri,
-        waveformBinCount: WAVEFORM_POINT_COUNT,
         maxAudioSourceBytes: MAX_AUDIO_BYTES,
         maxVideoSourceBytes: MAX_VIDEO_BYTES,
       });
       this.throwIfCancelled(active);
-      assertImportMediaResult(result, WAVEFORM_POINT_COUNT);
+      assertImportMediaResult(result);
       this.validateNativeResult(result, audioUri);
       this.diagnostics.recordExportCompleted({
         operationId,
         durationMs: result.durationMs,
         outputSizeBytes: result.audioSizeBytes,
       });
-      this.diagnostics.recordWaveformCompleted({
-        operationId,
-        durationMs: result.durationMs,
-        binCount: result.waveform.length,
-      });
-
       await this.audioValidator.validateLoadable(audioUri);
       this.throwIfCancelled(active);
 
@@ -574,6 +582,9 @@ export class ImportCoordinator {
       }
       if (this.activeImport === active) {
         this.activeImport = null;
+      }
+      if (committedProject !== null) {
+        this.waveformScheduler.enqueueProject(committedProject);
       }
     }
   }

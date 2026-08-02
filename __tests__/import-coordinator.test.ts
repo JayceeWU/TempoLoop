@@ -1,6 +1,6 @@
 import type * as DocumentPicker from 'expo-document-picker';
 
-import { MAX_AUDIO_BYTES, MAX_VIDEO_BYTES, WAVEFORM_POINT_COUNT } from '@/constants/app';
+import { MAX_AUDIO_BYTES, MAX_VIDEO_BYTES } from '@/constants/app';
 import { COPY } from '@/constants/copy';
 import type { DanceProject } from '@/domain/project';
 import { createEmptySegments } from '@/domain/segment';
@@ -54,7 +54,6 @@ function mediaResult(overrides: Partial<ImportMediaResult> = {}): ImportMediaRes
     audioUri: PARTIAL_URI,
     audioSizeBytes: 2_000_000,
     durationMs: DURATION_MS,
-    waveform: Array.from({ length: WAVEFORM_POINT_COUNT }, (_, index) => index / 2_048),
     ...overrides,
   };
 }
@@ -68,10 +67,12 @@ function project(input: FinalizeImportInput): DanceProject {
     updatedAtIso: '2026-07-31T12:00:00.000Z',
     audioFileName: 'audio.m4a',
     waveformFileName: 'waveform.json',
+    waveformStatus: 'pending',
     durationMs: input.result.durationMs,
     sourceDisplayName: input.sourceDisplayName,
     sourceSizeBytes: input.inspection.sourceSizeBytes,
     selectedRate: 1,
+    leadInMs: 6_000,
     segments: createEmptySegments(),
   };
 }
@@ -108,8 +109,10 @@ interface HarnessOptions {
   readonly pickerResult?: DocumentPicker.DocumentPickerResult;
   readonly galleryResult?: PickedMediaSource | null;
   readonly inspection?: MediaInspection;
+  readonly inspectionSequence?: readonly MediaInspection[];
   readonly result?: ImportMediaResult | Promise<ImportMediaResult>;
   readonly refresh?: () => Promise<void>;
+  readonly uuidValues?: readonly string[];
 }
 
 function createHarness(options: HarnessOptions = {}) {
@@ -128,6 +131,7 @@ function createHarness(options: HarnessOptions = {}) {
     }),
   };
   let progressListener: ((event: ImportProgressEvent) => void) | null = null;
+  const inspectionQueue = [...(options.inspectionSequence ?? [])];
   const subscription: TempoLoopMediaSubscription = {
     remove: jest.fn(() => order.push('unsubscribe')),
   };
@@ -145,24 +149,21 @@ function createHarness(options: HarnessOptions = {}) {
     }),
     inspectMedia: jest.fn(async (inspectOptions: InspectMediaOptions) => {
       order.push('inspect');
-      expect(inspectOptions).toEqual({
+      expect(inspectOptions).toMatchObject({
         sourceUri: CONTENT_URI,
         maxAudioSourceBytes: MAX_AUDIO_BYTES,
         maxVideoSourceBytes: MAX_VIDEO_BYTES,
       });
-      return options.inspection ?? INSPECTION;
+      return inspectionQueue.shift() ?? options.inspection ?? INSPECTION;
     }),
     importProjectMedia: jest.fn(async (importOptions: ImportMediaOptions) => {
       order.push('native-import');
-      expect(importOptions).toEqual({
-        operationId: OPERATION_ID,
+      expect(importOptions).toMatchObject({
         sourceUri: CONTENT_URI,
-        outputAudioUri: PARTIAL_URI,
-        waveformBinCount: WAVEFORM_POINT_COUNT,
         maxAudioSourceBytes: MAX_AUDIO_BYTES,
         maxVideoSourceBytes: MAX_VIDEO_BYTES,
       });
-      return await (options.result ?? mediaResult());
+      return await (options.result ?? mediaResult({ audioUri: importOptions.outputAudioUri }));
     }),
     cancelImport: jest.fn(async () => {
       order.push('native-cancel');
@@ -178,9 +179,9 @@ function createHarness(options: HarnessOptions = {}) {
     initialize: jest.fn(async () => {
       order.push('repository-init');
     }),
-    createImportDirectory: jest.fn(() => {
+    createImportDirectory: jest.fn((projectId) => {
       order.push('create-import-directory');
-      return `file:///documents/TempoLoop/imports/.import-${PROJECT_ID}`;
+      return `file:///documents/TempoLoop/imports/.import-${projectId}`;
     }),
     removeImportDirectory: jest.fn(() => {
       order.push('remove-import-directory');
@@ -203,7 +204,9 @@ function createHarness(options: HarnessOptions = {}) {
   };
   const audioValidator: PartialAudioValidator = {
     validateLoadable: jest.fn(async (uri) => {
-      expect(uri).toBe(PARTIAL_URI);
+      expect(uri).toMatch(
+        /^file:\/\/\/documents\/TempoLoop\/imports\/\.import-[0-9a-f-]+\/audio\.m4a\.partial$/,
+      );
       order.push('audio-load-check');
     }),
     clearSource: jest.fn(() => order.push('audio-clear')),
@@ -211,14 +214,17 @@ function createHarness(options: HarnessOptions = {}) {
   const refreshProjects = jest.fn(
     options.refresh ?? (async () => order.push('refresh') as unknown as void),
   );
-  const uuids = [SELECTION_ID, OPERATION_ID, PROJECT_ID];
+  const uuids = [...(options.uuidValues ?? [SELECTION_ID, OPERATION_ID, PROJECT_ID])];
   const coordinator = new ImportCoordinator({
     picker,
     media,
     repository,
     keepAwake,
     audioValidator,
-    layout: { importPartialAudioUri: () => PARTIAL_URI },
+    layout: {
+      importPartialAudioUri: (projectId) =>
+        `file:///documents/TempoLoop/imports/.import-${projectId}/audio.m4a.partial`,
+    },
     importState: useImportStore.getState(),
     refreshProjects,
     randomUuid: () => uuids.shift() ?? '33333333-3333-4333-8333-333333333333',
@@ -411,7 +417,6 @@ describe('ImportCoordinator transaction', () => {
       'import.stage',
       'import.source.inspected',
       'import.export.completed',
-      'import.waveform.completed',
       'import.completed',
     ]);
     const diagnosticJson = JSON.stringify(harness.diagnosticLog.getEntries());
@@ -448,6 +453,104 @@ describe('ImportCoordinator transaction', () => {
       sourceDisplayName: 'dance-track.mp3',
       inspection: audioInspection,
     });
+  });
+
+  it.each([
+    ['video', 'video'],
+    ['audio', 'audio'],
+    ['video', 'audio'],
+    ['audio', 'video'],
+  ] as const)(
+    'supports consecutive %s then %s imports without restarting',
+    async (first, second) => {
+      const projectTwoId = '55555555-5555-4555-8555-555555555555';
+      const harness = createHarness({
+        pickerResult: pickerResult({
+          name: 'practice.mp3',
+          mimeType: 'audio/mpeg',
+          size: 12 * 1024 * 1024,
+        }),
+        inspectionSequence: [
+          {
+            ...INSPECTION,
+            sourceKind: first,
+            sourceSizeBytes: first === 'audio' ? 12 * 1024 * 1024 : VIDEO_BYTES,
+          },
+          {
+            ...INSPECTION,
+            sourceKind: second,
+            sourceSizeBytes: second === 'audio' ? 12 * 1024 * 1024 : VIDEO_BYTES,
+          },
+        ],
+        uuidValues: [
+          SELECTION_ID,
+          OPERATION_ID,
+          PROJECT_ID,
+          '33333333-3333-4333-8333-333333333333',
+          '44444444-4444-4444-8444-444444444444',
+          projectTwoId,
+        ],
+      });
+
+      const selectKind = (kind: 'audio' | 'video') =>
+        kind === 'video'
+          ? harness.coordinator.selectVideoFromGallery()
+          : harness.coordinator.selectAudio();
+      const firstSelection = await selectKind(first);
+      expect(firstSelection).not.toBeNull();
+      await harness.coordinator.importProject({ selection: firstSelection!, name: 'First' });
+
+      const secondSelection = await selectKind(second);
+      expect(secondSelection).not.toBeNull();
+      await expect(
+        harness.coordinator.importProject({ selection: secondSelection!, name: 'Second' }),
+      ).resolves.toMatchObject({ id: projectTwoId, name: 'Second' });
+
+      expect(harness.audioValidator.validateLoadable).toHaveBeenNthCalledWith(1, PARTIAL_URI);
+      expect(harness.audioValidator.validateLoadable).toHaveBeenNthCalledWith(
+        2,
+        `file:///documents/TempoLoop/imports/.import-${projectTwoId}/audio.m4a.partial`,
+      );
+      expect(harness.repository.finalizeImport).toHaveBeenCalledTimes(2);
+      expect(harness.audioValidator.clearSource).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it('allows another import after an audio validation failure', async () => {
+    const projectTwoId = '55555555-5555-4555-8555-555555555555';
+    const harness = createHarness({
+      pickerResult: pickerResult({
+        name: 'practice.mp3',
+        mimeType: 'audio/mpeg',
+        size: 12 * 1024 * 1024,
+      }),
+      uuidValues: [
+        SELECTION_ID,
+        OPERATION_ID,
+        PROJECT_ID,
+        '33333333-3333-4333-8333-333333333333',
+        '44444444-4444-4444-8444-444444444444',
+        projectTwoId,
+      ],
+    });
+    jest
+      .mocked(harness.audioValidator.validateLoadable)
+      .mockRejectedValueOnce(
+        new TempoLoopMediaServiceError('E_AUDIO_LOAD_FAILED', 'first validation failed'),
+      )
+      .mockResolvedValueOnce(undefined);
+
+    const firstSelection = await harness.coordinator.selectVideoFromGallery();
+    expect(firstSelection).not.toBeNull();
+    await expect(
+      harness.coordinator.importProject({ selection: firstSelection!, name: 'First' }),
+    ).rejects.toMatchObject({ code: 'E_AUDIO_LOAD_FAILED' });
+
+    const secondSelection = await harness.coordinator.selectAudio();
+    expect(secondSelection).not.toBeNull();
+    await expect(
+      harness.coordinator.importProject({ selection: secondSelection!, name: 'Second' }),
+    ).resolves.toMatchObject({ id: projectTwoId, name: 'Second' });
   });
 
   it('imports MP3 content renamed with an M4S extension through the audio transaction', async () => {
@@ -488,13 +591,13 @@ describe('ImportCoordinator transaction', () => {
     expect(harness.repository.createImportDirectory).not.toHaveBeenCalled();
   });
 
-  it('rejects malformed native waveform results and removes only the app import directory', async () => {
-    const harness = createHarness({ result: mediaResult({ waveform: [0, 1] }) });
+  it('rejects malformed native export results and removes only the app import directory', async () => {
+    const harness = createHarness({ result: mediaResult({ audioSizeBytes: 0 }) });
     const selection = await select(harness);
 
     await expect(
       harness.coordinator.importProject({ selection, name: 'Practice' }),
-    ).rejects.toMatchObject({ code: 'E_WAVEFORM_FAILED' });
+    ).rejects.toMatchObject({ code: 'E_EXPORT_EMPTY' });
 
     expect(harness.media.cancelImport).toHaveBeenCalledWith(OPERATION_ID);
     expect(harness.audioValidator.validateLoadable).not.toHaveBeenCalled();
@@ -504,7 +607,7 @@ describe('ImportCoordinator transaction', () => {
     expect(harness.diagnosticLog.getEntries()).toContainEqual(
       expect.objectContaining({
         event: 'import.failed',
-        context: expect.objectContaining({ operationId: OPERATION_ID, code: 'E_WAVEFORM_FAILED' }),
+        context: expect.objectContaining({ operationId: OPERATION_ID, code: 'E_EXPORT_EMPTY' }),
       }),
     );
   });
@@ -595,7 +698,23 @@ describe('ImportCoordinator transaction', () => {
 
   it('cancels idempotently, suppresses alerts, unsubscribes, cleans only its import, and releases KeepAwake', async () => {
     const pending = deferred<ImportMediaResult>();
-    const harness = createHarness({ result: pending.promise });
+    const projectTwoId = '55555555-5555-4555-8555-555555555555';
+    const harness = createHarness({
+      pickerResult: pickerResult({
+        name: 'practice.mp3',
+        mimeType: 'audio/mpeg',
+        size: 12 * 1024 * 1024,
+      }),
+      result: pending.promise,
+      uuidValues: [
+        SELECTION_ID,
+        OPERATION_ID,
+        PROJECT_ID,
+        '33333333-3333-4333-8333-333333333333',
+        '44444444-4444-4444-8444-444444444444',
+        projectTwoId,
+      ],
+    });
     const selection = await select(harness);
     const importPromise = harness.coordinator.importProject({ selection, name: 'Practice' });
     const cancellationExpectation = expect(importPromise).rejects.toMatchObject({
@@ -633,5 +752,16 @@ describe('ImportCoordinator transaction', () => {
         }),
       }),
     );
+
+    jest.mocked(harness.media.importProjectMedia).mockResolvedValueOnce(
+      mediaResult({
+        audioUri: `file:///documents/TempoLoop/imports/.import-${projectTwoId}/audio.m4a.partial`,
+      }),
+    );
+    const retrySelection = await harness.coordinator.selectAudio();
+    expect(retrySelection).not.toBeNull();
+    await expect(
+      harness.coordinator.importProject({ selection: retrySelection!, name: 'After Cancel' }),
+    ).resolves.toMatchObject({ id: projectTwoId, name: 'After Cancel' });
   });
 });

@@ -17,7 +17,7 @@ export const PROJECT_SCHEMA_VERSION = 1 as const;
 export const WAVEFORM_SCHEMA_VERSION = 1 as const;
 export const SEGMENT_COUNT = 6 as const;
 export const WAVEFORM_POINT_COUNT = 2_048 as const;
-export const LEAD_IN_MS = 6_000 as const;
+export const DEFAULT_LEAD_IN_MS = 6_000 as const;
 
 export const MAX_PROJECT_NAME_LENGTH = 80 as const;
 export const MAX_VIDEO_BYTES = 600 * 1024 * 1024;

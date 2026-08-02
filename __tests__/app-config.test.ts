@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import config from '../app.config';
 import easConfig from '../eas.json';
 
@@ -10,7 +12,8 @@ describe('TempoLoop app configuration', () => {
     expect(config.version).toBe('1.0.0');
     expect(config.platforms).toEqual(['android']);
     expect(config.orientation).toBe('portrait');
-    expect(config.icon).toBe('./assets/images/tempoloop-icon-v2.png');
+    expect(config.userInterfaceStyle).toBe('dark');
+    expect(config.icon).toBe('./assets/images/tempoloop-icon-purple.png');
     expect(config.updates?.enabled).toBe(false);
     expect(config.extra?.eas).toEqual({
       projectId: 'b2ba5951-4f59-4fdf-83a4-ad1798b8e452',
@@ -21,7 +24,7 @@ describe('TempoLoop app configuration', () => {
         package: 'com.tempoloop.app',
         versionCode: 1,
         adaptiveIcon: {
-          foregroundImage: './assets/images/adaptive-icon.png',
+          foregroundImage: './assets/images/adaptive-icon-purple.png',
           backgroundColor: '#120A24',
         },
       }),
@@ -48,8 +51,9 @@ describe('TempoLoop app configuration', () => {
     expect(splashPlugin).toEqual([
       'expo-splash-screen',
       expect.objectContaining({
-        image: './assets/images/tempoloop-icon-v2.png',
-        backgroundColor: '#F7F6F2',
+        image: './assets/images/tempoloop-icon-purple.png',
+        backgroundColor: '#120A24',
+        dark: { backgroundColor: '#120A24' },
       }),
     ]);
 
@@ -83,5 +87,13 @@ describe('TempoLoop app configuration', () => {
       android: { buildType: 'apk' },
     });
     expect(easConfig).not.toHaveProperty('submit');
+  });
+
+  it('uses a square RGBA adaptive foreground with transparent-pixel support', () => {
+    const foreground = readFileSync('assets/images/adaptive-icon-purple.png');
+
+    expect(foreground.subarray(1, 4).toString('ascii')).toBe('PNG');
+    expect(foreground.readUInt32BE(16)).toBe(foreground.readUInt32BE(20));
+    expect(foreground[25]).toBe(6);
   });
 });

@@ -4,7 +4,6 @@ internal enum class ImportOperationState {
   IDLE,
   INSPECTING,
   EXPORTING,
-  WAVEFORM,
   FINALIZING,
   COMPLETED,
   FAILED,
@@ -27,11 +26,6 @@ internal class ImportStateMachine {
         ImportOperationState.CANCELLED
       )
       ImportOperationState.EXPORTING -> setOf(
-        ImportOperationState.WAVEFORM,
-        ImportOperationState.FAILED,
-        ImportOperationState.CANCELLED
-      )
-      ImportOperationState.WAVEFORM -> setOf(
         ImportOperationState.FINALIZING,
         ImportOperationState.FAILED,
         ImportOperationState.CANCELLED

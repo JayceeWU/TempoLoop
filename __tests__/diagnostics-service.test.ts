@@ -39,7 +39,7 @@ const IMPORT_SNAPSHOT: ImportStoreSnapshot = {
   projectName: 'Private Rehearsal',
   cancelRequested: false,
   terminalError: null,
-  stage: 'waveform',
+  stage: 'exporting',
   stageProgress: 0.5,
   overallProgress: 0.75,
 };
@@ -180,7 +180,7 @@ describe('Android DiagnosticsService', () => {
     expect(snapshot.import).toEqual({
       storeStatus: 'importing',
       coordinatorActive: true,
-      stage: 'waveform',
+      stage: 'exporting',
       stageProgress: 0.5,
       overallProgress: 0.75,
       cancelRequested: false,

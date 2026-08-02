@@ -14,7 +14,13 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.CoroutineContext
-import kotlin.math.sqrt
+
+internal data class GeneratedWaveform(
+  val samples: List<Double>,
+  val decodedFrameCount: Long,
+  val sampledFrameCount: Long,
+  val elapsedMs: Long
+)
 
 /**
  * Decodes the exported app-private M4A in bounded MediaCodec output buffers and
@@ -29,7 +35,7 @@ internal class WaveformGenerator(
     binCount: Int,
     onProgress: (Double) -> Unit = {},
     cancellationCheck: () -> Unit = {}
-  ): List<Double> = withContext(ioDispatcher) {
+  ): GeneratedWaveform = withContext(ioDispatcher) {
     val coroutineContext = currentCoroutineContext()
     val checkCancellation = {
       coroutineContext.ensureActive()
@@ -54,7 +60,7 @@ internal class WaveformGenerator(
     onProgress: (Double) -> Unit,
     cancellationCheck: () -> Unit,
     coroutineContext: CoroutineContext
-  ): List<Double> {
+  ): GeneratedWaveform {
     if (!audioFile.isFile || !audioFile.canRead() || audioFile.length() <= 0L) {
       throw mediaError(TempoLoopMediaError.EXPORT_EMPTY)
     }
@@ -67,11 +73,13 @@ internal class WaveformGenerator(
     } catch (error: ArithmeticException) {
       throw mediaError(TempoLoopMediaError.WAVEFORM_FAILED, error)
     }
-    val accumulator = WaveformAccumulator(durationUs, binCount)
+    val accumulator = WaveformAccumulator(durationUs, binCount, MAX_SAMPLED_FRAMES_PER_BIN)
     val progressReporter = WaveformProgressReporter(durationUs, onProgress)
     val extractor = MediaExtractor()
     var codec: MediaCodec? = null
     var codecStarted = false
+    var decodedFrameCount = 0L
+    val startedAtMs = SystemClock.elapsedRealtime()
 
     try {
       extractor.setDataSource(audioFile.absolutePath)
@@ -139,10 +147,11 @@ internal class WaveformGenerator(
               if (bufferInfo.size > 0 && !isCodecConfiguration) {
                 val outputBuffer = decoder.getOutputBuffer(outputIndex)
                   ?: throw mediaError(TempoLoopMediaError.WAVEFORM_FAILED)
-                consumePcmBuffer(
+                decodedFrameCount += consumePcmBuffer(
                   buffer = outputBuffer,
                   info = bufferInfo,
                   format = pcmFormat,
+                  durationUs = durationUs,
                   accumulator = accumulator,
                   cancellationCheck = cancellationCheck
                 )
@@ -167,7 +176,12 @@ internal class WaveformGenerator(
         throw mediaError(TempoLoopMediaError.WAVEFORM_FAILED)
       }
       progressReporter.finish()
-      return waveform
+      return GeneratedWaveform(
+        samples = waveform,
+        decodedFrameCount = decodedFrameCount,
+        sampledFrameCount = accumulator.sampledFrameCount(),
+        elapsedMs = (SystemClock.elapsedRealtime() - startedAtMs).coerceAtLeast(0L)
+      )
     } catch (error: TempoLoopMediaException) {
       throw error
     } catch (error: CancellationException) {
@@ -198,9 +212,10 @@ internal class WaveformGenerator(
     buffer: ByteBuffer,
     info: MediaCodec.BufferInfo,
     format: DecodedPcmFormat,
+    durationUs: Long,
     accumulator: WaveformAccumulator,
     cancellationCheck: () -> Unit
-  ) {
+  ): Long {
     val bytesPerSample = format.bytesPerSample
     val bytesPerFrame = bytesPerSample * format.channelCount
     if (
@@ -215,35 +230,57 @@ internal class WaveformGenerator(
 
     val frameCount = info.size / bytesPerFrame
     if (frameCount == 0) {
-      return
+      return 0L
     }
     val startOffset = info.offset
     val endOffset = startOffset + info.size
     val samples = buffer.duplicate().order(ByteOrder.nativeOrder())
-    samples.position(startOffset)
     samples.limit(endOffset)
     val basePresentationTimeUs = info.presentationTimeUs.coerceAtLeast(0L)
-    for (frameIndex in 0 until frameCount) {
-      if (frameIndex % CANCELLATION_FRAME_INTERVAL == 0) {
+    val estimatedTotalFrames = kotlin.math.ceil(
+      durationUs.toDouble() * format.sampleRate.toDouble() / MICROSECONDS_PER_SECOND.toDouble()
+    ).toLong().coerceAtLeast(1L)
+    val samplingBudget = accumulator.binCount.toLong() * MAX_SAMPLED_FRAMES_PER_BIN.toLong()
+    val stride = (((estimatedTotalFrames - 1L) / samplingBudget) + 1L)
+      .coerceAtLeast(1L)
+    val baseFrame = (
+      basePresentationTimeUs.toDouble() * format.sampleRate.toDouble() /
+        MICROSECONDS_PER_SECOND.toDouble()
+      ).toLong().coerceAtLeast(0L)
+    var frameIndex = (stride - (baseFrame % stride)) % stride
+    var sampledCandidates = 0
+    while (frameIndex < frameCount.toLong()) {
+      if (sampledCandidates % CANCELLATION_FRAME_INTERVAL == 0) {
         cancellationCheck()
       }
       var channelSquareSum = 0.0
-      repeat(format.channelCount) {
-        val sample = readPcmSample(samples, format.pcmEncoding)
+      val localFrameIndex = frameIndex.toInt()
+      val frameByteOffset = startOffset + localFrameIndex * bytesPerFrame
+      repeat(format.channelCount) { channelIndex ->
+        val sample = readPcmSampleAt(
+          samples,
+          frameByteOffset + channelIndex * bytesPerSample,
+          format.pcmEncoding
+        )
         channelSquareSum += sample * sample
       }
-      val frameRms = sqrt(channelSquareSum / format.channelCount.toDouble())
       val frameOffsetUs =
-        (frameIndex.toLong() * MICROSECONDS_PER_SECOND) / format.sampleRate.toLong()
-      accumulator.add(basePresentationTimeUs + frameOffsetUs, frameRms)
+        (frameIndex * MICROSECONDS_PER_SECOND) / format.sampleRate.toLong()
+      accumulator.addEnergy(
+        basePresentationTimeUs + frameOffsetUs,
+        channelSquareSum / format.channelCount.toDouble()
+      )
+      sampledCandidates += 1
+      frameIndex += stride
     }
+    return frameCount.toLong()
   }
 
-  private fun readPcmSample(buffer: ByteBuffer, pcmEncoding: Int): Double =
+  private fun readPcmSampleAt(buffer: ByteBuffer, offset: Int, pcmEncoding: Int): Double =
     when (pcmEncoding) {
-      AudioFormat.ENCODING_PCM_16BIT -> buffer.short.toDouble() / 32_768.0
+      AudioFormat.ENCODING_PCM_16BIT -> buffer.getShort(offset).toDouble() / 32_768.0
       AudioFormat.ENCODING_PCM_FLOAT -> {
-        val value = buffer.float
+        val value = buffer.getFloat(offset)
         if (value.isFinite()) value.coerceIn(-1.0f, 1.0f).toDouble() else 0.0
       }
       else -> throw mediaError(TempoLoopMediaError.WAVEFORM_FAILED)
@@ -338,5 +375,6 @@ internal class WaveformGenerator(
     const val CODEC_TIMEOUT_US = 10_000L
     const val CANCELLATION_FRAME_INTERVAL = 4_096
     const val PROGRESS_INTERVAL_MS = 125L
+    const val MAX_SAMPLED_FRAMES_PER_BIN = 256
   }
 }

@@ -14,6 +14,13 @@ describe('SegmentTimeRow', () => {
     );
 
     expect(screen.getAllByText('--:--')).toHaveLength(2);
+    expect(screen.getByTestId('segment-time-controls-0')).toHaveStyle({
+      flexDirection: 'row',
+    });
+    expect(screen.getByText('Start')).toBeTruthy();
+    expect(screen.getByText('End')).toBeTruthy();
+    expect(screen.getByText('Start')).toHaveStyle({ textAlign: 'center' });
+    expect(screen.getByText('End')).toHaveStyle({ textAlign: 'center' });
     expect(screen.getByRole('button', { name: 'Clear Segment 1' })).toBeDisabled();
     expect(screen.queryByRole('alert')).toBeNull();
   });
@@ -34,7 +41,7 @@ describe('SegmentTimeRow', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(
       'Set both start and end, or clear this segment.',
     );
-    expect(screen.getByText('Start set to 00:10.4')).toBeTruthy();
+    expect(screen.getByText('Start set to 00:10')).toBeTruthy();
 
     await fireEvent.press(screen.getByRole('button', { name: 'Set Segment 2 end' }));
     await fireEvent.press(screen.getByRole('button', { name: 'Clear Segment 2' }));

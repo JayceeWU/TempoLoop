@@ -16,12 +16,14 @@ function createProject(overrides: Partial<DanceProject> = {}): DanceProject {
     updatedAtIso: '2026-07-30T12:00:00.000Z',
     audioFileName: 'audio.m4a',
     waveformFileName: 'waveform.json',
+    waveformStatus: overrides.waveformStatus ?? 'ready',
     durationMs: 90_000,
     sourceDisplayName: null,
     sourceSizeBytes: null,
     selectedRate: 1,
     segments: createEmptySegments(),
     ...overrides,
+    leadInMs: overrides.leadInMs ?? 6_000,
   };
 }
 
@@ -79,7 +81,7 @@ describe('practice playback intent', () => {
     );
   });
 
-  it('resumes only when the paused native range exactly matches the selected range', () => {
+  it('restarts a paused range instead of resuming its current position', () => {
     expect(
       getPracticePlaybackIntent(
         {
@@ -90,7 +92,7 @@ describe('practice playback intent', () => {
         },
         selectedRange,
       ),
-    ).toBe('resume');
+    ).toBe('play-range');
 
     expect(
       getPracticePlaybackIntent(

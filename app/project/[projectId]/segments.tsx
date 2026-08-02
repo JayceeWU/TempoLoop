@@ -37,7 +37,10 @@ import {
 import { useTempoLoopPlayer } from '@/playback/useTempoLoopPlayer';
 import { projectRepository } from '@/repositories/ProjectRepository';
 import { waveformLoader } from '@/services/WaveformLoader';
+import { waveformGenerationCoordinator } from '@/services/WaveformGenerationCoordinator';
 import { useProjectStore } from '@/stores/useProjectStore';
+import { useWaveformStore } from '@/stores/useWaveformStore';
+import { navigateBackOrHome } from '@/utils/navigation';
 import { formatEditorTime } from '@/utils/time';
 
 type EditorConfirmation = {
@@ -47,8 +50,8 @@ type EditorConfirmation = {
 
 type WaveformLoadState =
   | { readonly status: 'loading'; readonly waveform: null }
-  | { readonly status: 'ready'; readonly waveform: StoredWaveform }
-  | { readonly status: 'failed'; readonly waveform: null };
+  | { readonly status: 'ready'; readonly waveform: StoredWaveform; readonly version: string }
+  | { readonly status: 'failed'; readonly waveform: null; readonly version: string };
 
 function firstParam(value: string | string[] | undefined): string | null {
   if (typeof value === 'string') {
@@ -97,7 +100,6 @@ function SegmentEditorContent({ project, audioUri, cameFromPractice }: SegmentEd
   const [draft, setDraft] = useState<DanceSegments>(() => createSegmentDraft(project.segments));
   const [confirmation, setConfirmation] = useState<EditorConfirmation | null>(null);
   const [highlightedInvalidIndex, setHighlightedInvalidIndex] = useState<SegmentIndex | null>(null);
-  const [waveformRetry, setWaveformRetry] = useState(0);
   const [waveformState, setWaveformState] = useState<WaveformLoadState>({
     status: 'loading',
     waveform: null,
@@ -125,6 +127,7 @@ function SegmentEditorContent({ project, audioUri, cameFromPractice }: SegmentEd
     player.snapshot.projectId,
   );
   const interactionDisabled = isSaving || isExiting || projectPending || !audioIsReady;
+  const waveformProgress = useWaveformStore((state) => state.progressByProjectId[project.id] ?? 0);
 
   useEffect(() => {
     playerRef.current = player;
@@ -160,23 +163,33 @@ function SegmentEditorContent({ project, audioUri, cameFromPractice }: SegmentEd
   useEffect(() => {
     let isCurrent = true;
 
+    if (project.waveformStatus !== 'ready') {
+      return () => {
+        isCurrent = false;
+      };
+    }
+
     void waveformLoader
       .load(project)
       .then((waveform) => {
         if (isCurrent) {
-          setWaveformState({ status: 'ready', waveform });
+          setWaveformState({ status: 'ready', waveform, version: project.updatedAtIso });
         }
       })
       .catch(() => {
         if (isCurrent) {
-          setWaveformState({ status: 'failed', waveform: null });
+          setWaveformState({
+            status: 'failed',
+            waveform: null,
+            version: project.updatedAtIso,
+          });
         }
       });
 
     return () => {
       isCurrent = false;
     };
-  }, [project, waveformRetry]);
+  }, [project]);
 
   const focusInvalidSegment = useCallback((index: SegmentIndex) => {
     setHighlightedInvalidIndex(index);
@@ -364,7 +377,7 @@ function SegmentEditorContent({ project, audioUri, cameFromPractice }: SegmentEd
         playerRef.current.deactivate();
         allowRemovalRef.current = true;
         if (cameFromPractice) {
-          router.back();
+          navigateBackOrHome();
         } else {
           router.replace({
             pathname: '/project/[projectId]',
@@ -398,9 +411,8 @@ function SegmentEditorContent({ project, audioUri, cameFromPractice }: SegmentEd
   }, [enterEditor, showPlaybackError]);
 
   const handleRetryWaveform = useCallback(() => {
-    setWaveformState({ status: 'loading', waveform: null });
-    setWaveformRetry((current) => current + 1);
-  }, []);
+    void waveformGenerationCoordinator.retry(project.id);
+  }, [project.id]);
 
   return (
     <SafeAreaView edges={['top', 'left', 'right', 'bottom']} style={styles.safeArea}>
@@ -409,7 +421,7 @@ function SegmentEditorContent({ project, audioUri, cameFromPractice }: SegmentEd
         <AppButton
           disabled={isExiting}
           label={COPY.common.cancel}
-          onPress={() => router.back()}
+          onPress={navigateBackOrHome}
           style={styles.headerAction}
           variant="ghost"
         />
@@ -426,12 +438,8 @@ function SegmentEditorContent({ project, audioUri, cameFromPractice }: SegmentEd
         />
       </View>
 
-      <ScrollView
-        contentContainerStyle={styles.content}
-        ref={scrollViewRef}
-        showsVerticalScrollIndicator={false}
-      >
-        <View style={styles.waveformSection}>
+      <View style={styles.waveformSection} testID="segment-editor-audio-panel">
+        <View style={styles.audioMeta}>
           <Text numberOfLines={1} style={styles.projectName}>
             {project.name}
           </Text>
@@ -441,64 +449,85 @@ function SegmentEditorContent({ project, audioUri, cameFromPractice }: SegmentEd
               formatEditorTime(project.durationMs),
             )}
           </Text>
-          <Text style={styles.rateLabel}>{COPY.segmentEditor.editorRate}</Text>
-
-          {waveformState.status === 'loading' ? (
-            <View style={styles.waveformStatus}>
-              <ActivityIndicator color={colors.accent} />
-              <Text style={styles.statusText}>{COPY.segmentEditor.waveformLoading}</Text>
-            </View>
-          ) : null}
-
-          {waveformState.status === 'failed' ? (
-            <View style={styles.waveformStatus}>
-              <Text accessibilityRole="alert" style={styles.statusText}>
-                {COPY.segmentEditor.waveformError}
-              </Text>
-              <AppButton
-                label={COPY.common.retry}
-                onPress={handleRetryWaveform}
-                variant="secondary"
-              />
-            </View>
-          ) : null}
-
-          {waveformState.status === 'ready' ? (
-            <WaveformScrubber
-              amplitudes={waveformState.waveform.samples}
-              currentTimeMs={audioIsReady ? player.snapshot.sourcePositionMs : 0}
-              disabled={interactionDisabled}
-              durationMs={project.durationMs}
-              onScrubCancel={handleScrubCancel}
-              onScrubStart={handleScrubStart}
-              onSeekPreview={handleSeekPreview}
-              onSeekRequested={handleSeekRequested}
-            />
-          ) : null}
-
-          {player.snapshot.status === 'error' ? (
-            <View style={styles.waveformStatus}>
-              <Text accessibilityRole="alert" style={styles.statusText}>
-                {COPY.segmentEditor.audioUnavailable}
-              </Text>
-              <AppButton label={COPY.common.retry} onPress={handleRetryAudio} variant="secondary" />
-            </View>
-          ) : null}
-
-          <AppButton
-            disabled={interactionDisabled}
-            fullWidth
-            label={
-              player.snapshot.status === 'playing'
-                ? COPY.segmentEditor.pause
-                : COPY.segmentEditor.play
-            }
-            loading={player.snapshot.status === 'loading'}
-            onPress={handleTogglePlayback}
-            size="large"
-          />
         </View>
 
+        {project.waveformStatus === 'pending' ? (
+          <View style={styles.waveformStatus}>
+            <ActivityIndicator color={colors.accent} />
+            <Text accessibilityLiveRegion="polite" style={styles.statusText}>
+              {COPY.segmentEditor.waveformProgress(Math.round(waveformProgress * 100))}
+            </Text>
+          </View>
+        ) : null}
+
+        {project.waveformStatus === 'ready' &&
+        !(waveformState.status !== 'loading' && waveformState.version === project.updatedAtIso) ? (
+          <View style={styles.waveformStatus}>
+            <ActivityIndicator color={colors.accent} />
+            <Text style={styles.statusText}>{COPY.segmentEditor.waveformLoading}</Text>
+          </View>
+        ) : null}
+
+        {project.waveformStatus === 'failed' ||
+        (project.waveformStatus === 'ready' &&
+          waveformState.status === 'failed' &&
+          waveformState.version === project.updatedAtIso) ? (
+          <View style={styles.waveformStatus}>
+            <Text accessibilityRole="alert" style={styles.statusText}>
+              {COPY.segmentEditor.waveformError}
+            </Text>
+            <AppButton
+              label={COPY.common.retry}
+              onPress={handleRetryWaveform}
+              variant="secondary"
+            />
+          </View>
+        ) : null}
+
+        {project.waveformStatus === 'ready' &&
+        waveformState.status === 'ready' &&
+        waveformState.version === project.updatedAtIso ? (
+          <WaveformScrubber
+            amplitudes={waveformState.waveform.samples}
+            currentTimeMs={audioIsReady ? player.snapshot.sourcePositionMs : 0}
+            disabled={interactionDisabled}
+            durationMs={project.durationMs}
+            isPlaying={player.snapshot.status === 'playing'}
+            onScrubCancel={handleScrubCancel}
+            onScrubStart={handleScrubStart}
+            onSeekPreview={handleSeekPreview}
+            onSeekRequested={handleSeekRequested}
+          />
+        ) : null}
+
+        {player.snapshot.status === 'error' ? (
+          <View style={styles.waveformStatus}>
+            <Text accessibilityRole="alert" style={styles.statusText}>
+              {COPY.segmentEditor.audioUnavailable}
+            </Text>
+            <AppButton label={COPY.common.retry} onPress={handleRetryAudio} variant="secondary" />
+          </View>
+        ) : null}
+
+        <AppButton
+          disabled={interactionDisabled}
+          fullWidth
+          label={
+            player.snapshot.status === 'playing'
+              ? COPY.segmentEditor.pause
+              : COPY.segmentEditor.play
+          }
+          loading={player.snapshot.status === 'loading'}
+          onPress={handleTogglePlayback}
+        />
+      </View>
+
+      <ScrollView
+        contentContainerStyle={styles.segmentContent}
+        ref={scrollViewRef}
+        showsVerticalScrollIndicator={false}
+        testID="segment-editor-segment-scroll"
+      >
         <View style={styles.segmentList}>
           {draft.map((segment) => (
             <View
@@ -617,7 +646,7 @@ export default function SegmentEditorScreen() {
           <EmptyState
             actionLabel={COPY.practice.backAccessibilityLabel}
             message={COPY.segmentEditor.projectNotFoundMessage}
-            onAction={() => router.back()}
+            onAction={navigateBackOrHome}
             title={COPY.segmentEditor.projectNotFoundTitle}
           />
         </View>
@@ -664,37 +693,40 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.semibold,
     textAlign: 'center',
   },
-  content: {
-    gap: spacing.lg,
+  segmentContent: {
     padding: spacing.md,
     paddingBottom: spacing.xxl,
   },
   waveformSection: {
+    backgroundColor: colors.background,
+    borderBottomColor: colors.border,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    gap: spacing.xs,
+    paddingBottom: spacing.sm,
+    paddingHorizontal: spacing.md,
+  },
+  audioMeta: {
+    alignItems: 'center',
+    flexDirection: 'row',
     gap: spacing.sm,
   },
   projectName: {
     color: colors.text,
+    flex: 1,
     fontSize: fontSizes.body,
     fontWeight: fontWeights.semibold,
-    textAlign: 'center',
   },
   timeDisplay: {
     color: colors.text,
-    fontSize: fontSizes.title,
+    fontSize: fontSizes.body,
     fontVariant: ['tabular-nums'],
     fontWeight: fontWeights.semibold,
-    textAlign: 'center',
-  },
-  rateLabel: {
-    color: colors.textMuted,
-    fontSize: fontSizes.caption,
-    textAlign: 'center',
   },
   waveformStatus: {
     alignItems: 'center',
     gap: spacing.sm,
     justifyContent: 'center',
-    minHeight: 112,
+    minHeight: 72,
   },
   statusText: {
     color: colors.textMuted,
@@ -702,6 +734,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   segmentList: {
-    gap: spacing.md,
+    gap: spacing.sm,
   },
 });

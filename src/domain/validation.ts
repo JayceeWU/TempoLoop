@@ -1,12 +1,13 @@
 import {
   AUDIO_FILE_NAME,
+  DEFAULT_LEAD_IN_MS,
   MAX_PROJECT_NAME_LENGTH,
   PROJECT_SCHEMA_VERSION,
   WAVEFORM_FILE_NAME,
   WAVEFORM_POINT_COUNT,
   WAVEFORM_SCHEMA_VERSION,
 } from '@/constants/app';
-import { PLAYBACK_RATES } from '@/domain/playback';
+import { LEAD_IN_OPTIONS_MS, PLAYBACK_RATES } from '@/domain/playback';
 import type { DanceProject, StoredWaveform } from '@/domain/project';
 import {
   SEGMENT_IDS,
@@ -135,6 +136,8 @@ export const DanceSegmentsSchema: z.ZodType<DanceSegments> = z.tuple([
 ]);
 
 export const PlaybackRateSchema = z.union(PLAYBACK_RATES.map((rate) => z.literal(rate)));
+export const LeadInMsSchema = z.union(LEAD_IN_OPTIONS_MS.map((leadInMs) => z.literal(leadInMs)));
+export const WaveformStatusSchema = z.enum(['pending', 'ready', 'failed']);
 
 const IsoDateTimeSchema = z.string().datetime({ offset: true });
 
@@ -146,10 +149,12 @@ const DanceProjectBaseSchema = z.strictObject({
   updatedAtIso: IsoDateTimeSchema,
   audioFileName: z.literal(AUDIO_FILE_NAME),
   waveformFileName: z.literal(WAVEFORM_FILE_NAME),
+  waveformStatus: WaveformStatusSchema.default('ready'),
   durationMs: z.number().finite().int().positive(),
   sourceDisplayName: z.string().nullable(),
   sourceSizeBytes: z.number().finite().int().nonnegative().nullable(),
   selectedRate: PlaybackRateSchema,
+  leadInMs: LeadInMsSchema.default(DEFAULT_LEAD_IN_MS),
   segments: DanceSegmentsSchema,
 });
 

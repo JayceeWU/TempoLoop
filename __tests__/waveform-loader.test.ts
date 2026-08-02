@@ -7,6 +7,7 @@ const PROJECT_ID = '550e8400-e29b-41d4-a716-446655440000';
 const PROJECT_METADATA = {
   id: PROJECT_ID,
   waveformFileName: 'waveform.json',
+  waveformStatus: 'ready',
   durationMs: DURATION_MS,
 } as const;
 

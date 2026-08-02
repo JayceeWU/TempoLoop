@@ -72,4 +72,18 @@ class WaveformMathTest {
     assertTrue(result.all { it.isFinite() && it in 0.0..1.0 })
     assertEquals(1.0, result.last(), 0.0)
   }
+
+  @Test
+  fun `accumulator enforces the deterministic per-bin sample budget`() {
+    val accumulator = WaveformAccumulator(
+      durationUs = 1_000L,
+      binCount = 2,
+      maximumSamplesPerBin = 2
+    )
+
+    assertTrue(accumulator.addEnergy(10L, 0.25))
+    assertTrue(accumulator.addEnergy(20L, 0.25))
+    assertTrue(!accumulator.addEnergy(30L, 1.0))
+    assertEquals(2L, accumulator.sampledFrameCount())
+  }
 }

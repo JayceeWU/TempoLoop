@@ -1,4 +1,5 @@
 import { StyleSheet, Text, View } from 'react-native';
+import Svg, { Ellipse, Path } from 'react-native-svg';
 
 import { AppButton } from '@/components/AppButton';
 import { colors, fontSizes, fontWeights, spacing } from '@/constants/theme';
@@ -17,8 +18,34 @@ export function EmptyState({ title, message, actionLabel, onAction }: EmptyState
     <View accessibilityRole="summary" style={styles.container}>
       <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
         <View style={styles.iconRing}>
-          <View style={styles.noteStem} />
-          <View style={styles.noteHead} />
+          <View style={styles.iconHalo}>
+            <Svg height={48} testID="empty-state-music-icon" viewBox="0 0 48 48" width={48}>
+              <Path
+                d="M17 34V14L38 10V29"
+                fill="none"
+                stroke={colors.accent}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={4}
+              />
+              <Ellipse
+                cx={12.5}
+                cy={36}
+                fill={colors.accent}
+                rx={7.5}
+                ry={5.5}
+                transform="rotate(-14 12.5 36)"
+              />
+              <Ellipse
+                cx={33.5}
+                cy={31}
+                fill={colors.accent}
+                rx={7.5}
+                ry={5.5}
+                transform="rotate(-14 33.5 31)"
+              />
+            </Svg>
+          </View>
         </View>
       </View>
       <Text style={styles.title}>{title}</Text>
@@ -47,31 +74,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: colors.surface,
     borderColor: colors.border,
-    borderRadius: 42,
-    borderWidth: StyleSheet.hairlineWidth,
-    height: 84,
+    borderRadius: 46,
+    borderWidth: 1,
+    height: 92,
     justifyContent: 'center',
     marginBottom: spacing.lg,
-    width: 84,
+    width: 92,
   },
-  noteStem: {
-    backgroundColor: colors.accent,
-    borderRadius: 2,
-    height: 30,
-    left: 8,
-    position: 'relative',
-    top: -2,
-    width: 4,
-  },
-  noteHead: {
-    backgroundColor: colors.accent,
-    borderRadius: 10,
-    height: 18,
-    left: 1,
-    position: 'relative',
-    top: -8,
-    transform: [{ rotate: '-18deg' }],
-    width: 22,
+  iconHalo: {
+    alignItems: 'center',
+    backgroundColor: colors.accentTranslucent,
+    borderRadius: 31,
+    height: 62,
+    justifyContent: 'center',
+    width: 62,
   },
   title: {
     color: colors.text,

@@ -6,6 +6,9 @@ import {
   type ImportMediaOptions,
   type ImportMediaResult,
   type ImportProgressEvent,
+  type GenerateWaveformOptions,
+  type GenerateWaveformResult,
+  type WaveformProgressEvent,
   type InspectMediaOptions,
   type TempoLoopMediaClient,
   type TempoLoopMediaErrorCode,
@@ -91,14 +94,23 @@ function assertImportMediaOptions(options: ImportMediaOptions): void {
   if (!isFileUri(options.outputAudioUri)) {
     fail('E_PATH_OUTSIDE_APP', 'The output must be a file:// URI.');
   }
-  if (!isPositiveInteger(options.waveformBinCount)) {
-    fail('E_WAVEFORM_FAILED', 'The waveform bin count must be a positive integer.');
-  }
   if (
     !isPositiveInteger(options.maxAudioSourceBytes) ||
     !isPositiveInteger(options.maxVideoSourceBytes)
   ) {
     fail('E_UNKNOWN_NATIVE', 'Media source size limits must be positive integers.');
+  }
+}
+
+function assertGenerateWaveformOptions(options: GenerateWaveformOptions): void {
+  if (!isRecord(options) || !isNonEmptyString(options.operationId)) {
+    fail('E_UNKNOWN_NATIVE', 'Waveform options must include an operation ID.');
+  }
+  if (!isFileUri(options.audioUri)) {
+    fail('E_PATH_OUTSIDE_APP', 'Waveform audio must be an app-private file:// URI.');
+  }
+  if (!isPositiveInteger(options.durationMs) || !isPositiveInteger(options.waveformBinCount)) {
+    fail('E_WAVEFORM_FAILED', 'Waveform duration and bin count must be positive integers.');
   }
 }
 
@@ -156,13 +168,7 @@ export function assertMediaInspection(value: unknown): asserts value is MediaIns
   }
 }
 
-export function assertImportMediaResult(
-  value: unknown,
-  expectedWaveformBinCount: number,
-): asserts value is ImportMediaResult {
-  if (!isPositiveInteger(expectedWaveformBinCount)) {
-    fail('E_WAVEFORM_FAILED', 'The expected waveform bin count must be a positive integer.');
-  }
+export function assertImportMediaResult(value: unknown): asserts value is ImportMediaResult {
   if (!isRecord(value)) {
     fail('E_UNKNOWN_NATIVE', 'Native media import returned a non-object value.');
   }
@@ -175,16 +181,41 @@ export function assertImportMediaResult(
   if (!isPositiveInteger(value.durationMs)) {
     fail('E_INVALID_DURATION', 'Native media import returned an invalid duration.');
   }
-  if (!Array.isArray(value.waveform) || value.waveform.length !== expectedWaveformBinCount) {
-    fail('E_WAVEFORM_FAILED', 'Native media import returned the wrong waveform length.');
+}
+
+export function assertGenerateWaveformResult(
+  value: unknown,
+  expectedBinCount: number,
+): asserts value is GenerateWaveformResult {
+  if (!isRecord(value) || !isPositiveInteger(value.durationMs)) {
+    fail('E_WAVEFORM_FAILED', 'Native waveform generation returned invalid metadata.');
+  }
+  const decodedFrameCount = value.decodedFrameCount;
+  const sampledFrameCount = value.sampledFrameCount;
+  const elapsedMs = value.elapsedMs;
+  if (value.sampleCount !== expectedBinCount || !Array.isArray(value.samples)) {
+    fail('E_WAVEFORM_FAILED', 'Native waveform generation returned the wrong sample count.');
   }
   if (
-    !value.waveform.every(
+    !value.samples.every(
       (sample) =>
         typeof sample === 'number' && Number.isFinite(sample) && sample >= 0 && sample <= 1,
     )
   ) {
-    fail('E_WAVEFORM_FAILED', 'Native media import returned an invalid waveform sample.');
+    fail('E_WAVEFORM_FAILED', 'Native waveform generation returned an invalid sample.');
+  }
+  if (
+    typeof decodedFrameCount !== 'number' ||
+    !Number.isSafeInteger(decodedFrameCount) ||
+    decodedFrameCount < 0 ||
+    typeof sampledFrameCount !== 'number' ||
+    !Number.isSafeInteger(sampledFrameCount) ||
+    sampledFrameCount < 0 ||
+    typeof elapsedMs !== 'number' ||
+    !Number.isSafeInteger(elapsedMs) ||
+    elapsedMs < 0
+  ) {
+    fail('E_WAVEFORM_FAILED', 'Native waveform diagnostics are invalid.');
   }
 }
 
@@ -206,6 +237,22 @@ export function assertImportProgressEvent(value: unknown): asserts value is Impo
   }
   if (!isNullableProgress(value.overallProgress)) {
     fail('E_UNKNOWN_NATIVE', 'Native import progress returned invalid overall progress.');
+  }
+}
+
+export function assertWaveformProgressEvent(
+  value: unknown,
+): asserts value is WaveformProgressEvent {
+  if (!isRecord(value) || !isNonEmptyString(value.operationId)) {
+    fail('E_UNKNOWN_NATIVE', 'Native waveform progress returned invalid metadata.');
+  }
+  if (
+    typeof value.progress !== 'number' ||
+    !Number.isFinite(value.progress) ||
+    value.progress < 0 ||
+    value.progress > 1
+  ) {
+    fail('E_UNKNOWN_NATIVE', 'Native waveform progress returned an invalid value.');
   }
 }
 
@@ -232,13 +279,25 @@ export function createTempoLoopMediaClient(
     async importProjectMedia(options) {
       assertImportMediaOptions(options);
       const result: unknown = await getNativeModule().importProjectMedia(options);
-      assertImportMediaResult(result, options.waveformBinCount);
+      assertImportMediaResult(result);
       return result;
     },
 
     async cancelImport(operationId) {
       assertOperationId(operationId);
       await getNativeModule().cancelImport(operationId);
+    },
+
+    async generateWaveform(options) {
+      assertGenerateWaveformOptions(options);
+      const result: unknown = await getNativeModule().generateWaveform(options);
+      assertGenerateWaveformResult(result, options.waveformBinCount);
+      return result;
+    },
+
+    async cancelWaveform(operationId) {
+      assertOperationId(operationId);
+      await getNativeModule().cancelWaveform(operationId);
     },
 
     addImportProgressListener(listener) {
@@ -248,6 +307,16 @@ export function createTempoLoopMediaClient(
 
       return getNativeModule().addListener('onImportProgress', (event: unknown) => {
         assertImportProgressEvent(event);
+        listener(event);
+      });
+    },
+
+    addWaveformProgressListener(listener) {
+      if (typeof listener !== 'function') {
+        fail('E_UNKNOWN_NATIVE', 'The waveform progress listener must be a function.');
+      }
+      return getNativeModule().addListener('onWaveformProgress', (event: unknown) => {
+        assertWaveformProgressEvent(event);
         listener(event);
       });
     },

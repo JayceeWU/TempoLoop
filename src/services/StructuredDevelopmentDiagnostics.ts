@@ -1,4 +1,5 @@
 import { developmentLog, type DevelopmentLog } from '@/services/DevelopmentLog';
+import type { AudioLoadFailureStage } from '@/services/PartialAudioValidator';
 
 export type DiagnosticImportStage = 'inspecting' | 'exporting' | 'waveform' | 'finalizing';
 
@@ -109,6 +110,21 @@ function safeErrorCode(error: unknown): string {
   return 'E_UNKNOWN';
 }
 
+function safeAudioLoadFailureStage(error: unknown): AudioLoadFailureStage | null {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'loadFailureStage' in error &&
+    (error.loadFailureStage === 'prepare' ||
+      error.loadFailureStage === 'replace' ||
+      error.loadFailureStage === 'native-status' ||
+      error.loadFailureStage === 'timeout')
+  ) {
+    return error.loadFailureStage;
+  }
+  return null;
+}
+
 function safeOptionalInteger(value: number | null): number | null {
   return value !== null && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
@@ -212,6 +228,7 @@ export class StructuredDevelopmentDiagnostics implements StructuredDiagnosticsRe
       operationId: input.operationId === undefined ? null : safeIdentifier(input.operationId),
       projectId: input.projectId === undefined ? null : safeIdentifier(input.projectId),
       code: safeErrorCode(input.error),
+      failureStage: safeAudioLoadFailureStage(input.error),
     });
   }
 

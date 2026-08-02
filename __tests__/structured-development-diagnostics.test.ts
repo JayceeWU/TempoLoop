@@ -16,7 +16,11 @@ describe('StructuredDevelopmentDiagnostics', () => {
     });
     diagnostics.recordAudioLoadFailure({
       projectId: 'project-1',
-      error: { code: 'E_AUDIO_LOAD_FAILED', path: 'file:///private/audio.m4a' },
+      error: {
+        code: 'E_AUDIO_LOAD_FAILED',
+        loadFailureStage: 'native-status',
+        path: 'file:///private/audio.m4a',
+      },
     });
     diagnostics.recordStalePlaybackCommand({
       command: 'seek',
@@ -40,6 +44,7 @@ describe('StructuredDevelopmentDiagnostics', () => {
     const serialized = JSON.stringify(log.getEntries());
     expect(serialized).toContain('E_PROJECT_CORRUPT');
     expect(serialized).toContain('E_AUDIO_LOAD_FAILED');
+    expect(serialized).toContain('native-status');
     expect(serialized).toContain('E_PLAYBACK_COMMAND_STALE');
     expect(serialized).not.toContain('content://');
     expect(serialized).not.toContain('private/audio');

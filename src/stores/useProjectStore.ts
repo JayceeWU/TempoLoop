@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-import type { PlaybackRate } from '@/domain/playback';
+import type { LeadInMs, PlaybackRate } from '@/domain/playback';
 import type { DanceProject } from '@/domain/project';
 import { projectRepository } from '@/repositories/ProjectRepository';
 import type { ProjectMediaStatus, RecoveryDiagnostic } from '@/services/RecoveryService';
@@ -21,6 +21,7 @@ interface ProjectStoreState {
   renameProject: (projectId: string, name: string) => Promise<void>;
   updateSegments: (projectId: string, segments: DanceProject['segments']) => Promise<void>;
   updateSelectedRate: (projectId: string, selectedRate: PlaybackRate) => Promise<void>;
+  updateLeadInMs: (projectId: string, leadInMs: LeadInMs) => Promise<void>;
   deleteProject: (projectId: string) => Promise<void>;
   clearError: () => void;
 }
@@ -150,6 +151,9 @@ export const useProjectStore = create<ProjectStoreState>((set, get) => ({
       () => projectRepository.updateSelectedRate(projectId, selectedRate),
       set,
     ),
+
+  updateLeadInMs: async (projectId, leadInMs) =>
+    runProjectMutation(projectId, () => projectRepository.updateLeadInMs(projectId, leadInMs), set),
 
   deleteProject: async (projectId) =>
     runProjectMutation(projectId, () => projectRepository.delete(projectId), set),

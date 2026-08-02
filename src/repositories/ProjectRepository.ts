@@ -1,10 +1,11 @@
-import { WAVEFORM_POINT_COUNT } from '@/constants/app';
-import type { PlaybackRate } from '@/domain/playback';
-import type { DanceProject, StoredWaveform } from '@/domain/project';
+import { DEFAULT_LEAD_IN_MS } from '@/constants/app';
+import type { LeadInMs, PlaybackRate } from '@/domain/playback';
+import type { DanceProject, StoredWaveform, WaveformStatus } from '@/domain/project';
 import { createEmptySegments, type DanceSegments } from '@/domain/segment';
 import {
   DanceProjectSchema,
   DanceSegmentsSchema,
+  LeadInMsSchema,
   ProjectNameSchema,
   StoredWaveformSchema,
 } from '@/domain/validation';
@@ -27,7 +28,6 @@ import {
   PROJECT_METADATA_FILE_NAME,
   PROJECT_METADATA_TEMP_FILE_NAME,
   PROJECT_WAVEFORM_FILE_NAME,
-  PROJECT_WAVEFORM_TEMP_FILE_NAME,
   type StorageFileSystem,
   StorageLayout,
   storageLayout,
@@ -48,7 +48,6 @@ const ImportMediaResultMetadataSchema = z.strictObject({
   audioUri: z.string().min(1),
   audioSizeBytes: z.number().finite().int().positive(),
   durationMs: z.number().finite().int().positive(),
-  waveform: z.unknown(),
 });
 
 export type ProjectRepositoryErrorCode =
@@ -257,6 +256,56 @@ export class ProjectRepository {
     }));
   }
 
+  updateLeadInMs(projectId: string, leadInMs: LeadInMs): Promise<void> {
+    const validatedLeadInMs = LeadInMsSchema.parse(leadInMs);
+    return this.updateProject(projectId, (project) => ({
+      ...project,
+      leadInMs: validatedLeadInMs,
+    }));
+  }
+
+  updateWaveformStatus(projectId: string, waveformStatus: WaveformStatus): Promise<void> {
+    return this.updateProject(projectId, (project) => ({ ...project, waveformStatus }));
+  }
+
+  completeWaveform(projectId: string, waveform: StoredWaveform): Promise<void> {
+    return this.enqueueMutation(async () => {
+      const currentProject = this.getRequired(projectId);
+      const validatedWaveform = StoredWaveformSchema.parse(waveform);
+      if (validatedWaveform.durationMs !== currentProject.durationMs) {
+        throw new ProjectRepositoryError(
+          'E_IMPORT_WAVEFORM_INVALID',
+          'The generated waveform duration does not match the project.',
+        );
+      }
+
+      await this.writeValidatedJson(
+        this.layout.projectWaveformTempUri(projectId),
+        this.layout.projectWaveformUri(projectId),
+        validatedWaveform,
+        StoredWaveformSchema,
+        'waveform',
+      );
+
+      const updatedProject = DanceProjectSchema.parse({
+        ...currentProject,
+        waveformStatus: 'ready',
+        updatedAtIso: this.now(),
+      });
+      await this.writeValidatedJson(
+        this.layout.projectMetadataTempUri(projectId),
+        this.layout.projectMetadataUri(projectId),
+        updatedProject,
+        DanceProjectSchema,
+        'project metadata',
+      );
+      this.projects = sortProjects(
+        this.projects.map((project) => (project.id === projectId ? updatedProject : project)),
+      );
+      this.mediaStatusByProjectId.set(projectId, { state: 'ready', issues: [] });
+    });
+  }
+
   delete(projectId: string): Promise<void> {
     return this.enqueueMutation(async () => {
       this.getRequired(projectId);
@@ -461,22 +510,6 @@ export class ProjectRepository {
       );
     }
 
-    let waveform: StoredWaveform;
-    try {
-      waveform = StoredWaveformSchema.parse({
-        schemaVersion: 1,
-        durationMs: mediaResult.data.durationMs,
-        sampleCount: WAVEFORM_POINT_COUNT,
-        samples: input.result.waveform,
-      });
-    } catch (error) {
-      throw new ProjectRepositoryError(
-        'E_IMPORT_WAVEFORM_INVALID',
-        'The imported waveform is invalid.',
-        { cause: error },
-      );
-    }
-
     const timestamp = input.createdAtIso ?? this.now();
     const project = DanceProjectSchema.parse({
       schemaVersion: 1,
@@ -486,10 +519,12 @@ export class ProjectRepository {
       updatedAtIso: timestamp,
       audioFileName: PROJECT_AUDIO_FILE_NAME,
       waveformFileName: PROJECT_WAVEFORM_FILE_NAME,
+      waveformStatus: 'pending',
       durationMs: mediaResult.data.durationMs,
       sourceDisplayName: input.sourceDisplayName,
       sourceSizeBytes: inspectionResult.data.sourceSizeBytes,
       selectedRate: 1,
+      leadInMs: DEFAULT_LEAD_IN_MS,
       segments: createEmptySegments(),
     });
 
@@ -505,13 +540,6 @@ export class ProjectRepository {
       const finalAudioUri = this.layout.fileSystem.join(
         importDirectoryUri,
         PROJECT_AUDIO_FILE_NAME,
-      );
-      await this.writeValidatedJson(
-        this.layout.fileSystem.join(importDirectoryUri, PROJECT_WAVEFORM_TEMP_FILE_NAME),
-        this.layout.fileSystem.join(importDirectoryUri, PROJECT_WAVEFORM_FILE_NAME),
-        waveform,
-        StoredWaveformSchema,
-        'waveform',
       );
       await this.writeValidatedTemporaryJson(
         this.layout.fileSystem.join(importDirectoryUri, PROJECT_METADATA_TEMP_FILE_NAME),
@@ -822,15 +850,6 @@ export class ProjectRepository {
       throw new ProjectRepositoryError(
         'E_IMPORT_FILE_MISSING',
         'The finalized project audio size does not match the import journal.',
-      );
-    }
-
-    const waveformUri = this.layout.fileSystem.join(directoryUri, PROJECT_WAVEFORM_FILE_NAME);
-    const waveform = await this.readValidatedJson(waveformUri, StoredWaveformSchema);
-    if (waveform === null || waveform.durationMs !== expectedProject.durationMs) {
-      throw new ProjectRepositoryError(
-        'E_IMPORT_WAVEFORM_INVALID',
-        'The finalized project waveform is invalid.',
       );
     }
 

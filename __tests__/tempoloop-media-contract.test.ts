@@ -7,12 +7,15 @@ import TempoLoopMedia, {
   TempoLoopMediaContractError,
   assertImportMediaResult,
   assertImportProgressEvent,
+  assertGenerateWaveformResult,
   assertMediaInspection,
   assertPickedMediaSource,
   createTempoLoopMediaClient,
   type ImportMediaOptions,
   type ImportMediaResult,
   type ImportProgressEvent,
+  type GenerateWaveformOptions,
+  type GenerateWaveformResult,
   type InspectMediaOptions,
   type MediaInspection,
   type PickedMediaSource,
@@ -35,7 +38,12 @@ type Assert<Condition extends true> = Condition;
 type HasExactApiMethods = Assert<
   IsExactly<
     keyof TempoLoopMediaApi,
-    'pickGalleryVideo' | 'inspectMedia' | 'importProjectMedia' | 'cancelImport'
+    | 'pickGalleryVideo'
+    | 'inspectMedia'
+    | 'importProjectMedia'
+    | 'cancelImport'
+    | 'generateWaveform'
+    | 'cancelWaveform'
   >
 >;
 type HasExactInspectOptions = Assert<
@@ -44,12 +52,7 @@ type HasExactInspectOptions = Assert<
 type HasExactImportOptions = Assert<
   IsExactly<
     keyof ImportMediaOptions,
-    | 'operationId'
-    | 'sourceUri'
-    | 'outputAudioUri'
-    | 'waveformBinCount'
-    | 'maxAudioSourceBytes'
-    | 'maxVideoSourceBytes'
+    'operationId' | 'sourceUri' | 'outputAudioUri' | 'maxAudioSourceBytes' | 'maxVideoSourceBytes'
   >
 >;
 type HasExactInspectionResult = Assert<
@@ -64,7 +67,7 @@ type HasExactInspectionResult = Assert<
   >
 >;
 type HasExactImportResult = Assert<
-  IsExactly<keyof ImportMediaResult, 'audioUri' | 'audioSizeBytes' | 'durationMs' | 'waveform'>
+  IsExactly<keyof ImportMediaResult, 'audioUri' | 'audioSizeBytes' | 'durationMs'>
 >;
 type HasExactProgressEvent = Assert<
   IsExactly<
@@ -109,7 +112,15 @@ const VALID_IMPORT_RESULT: ImportMediaResult = {
   audioUri: 'file:///data/user/0/com.tempoloop.app/files/audio.m4a.partial',
   audioSizeBytes: 12_345,
   durationMs: 90_001,
-  waveform: [0, 0.25, 1, 0.5],
+};
+
+const VALID_WAVEFORM_RESULT: GenerateWaveformResult = {
+  durationMs: 90_001,
+  sampleCount: 4,
+  samples: [0, 0.25, 1, 0.5],
+  decodedFrameCount: 4_320_048,
+  sampledFrameCount: 1_024,
+  elapsedMs: 250,
 };
 
 function createNativeModule(
@@ -120,6 +131,8 @@ function createNativeModule(
     inspectMedia: jest.fn(async () => VALID_INSPECTION),
     importProjectMedia: jest.fn(async () => VALID_IMPORT_RESULT),
     cancelImport: jest.fn(async () => undefined),
+    generateWaveform: jest.fn(async () => VALID_WAVEFORM_RESULT),
+    cancelWaveform: jest.fn(async () => undefined),
     addListener: jest.fn(() => ({ remove: jest.fn() })),
     ...overrides,
   };
@@ -139,7 +152,7 @@ describe('TempoLoopMedia TypeScript contract', () => {
 
   it('keeps the public methods, records, and typed listener exact', () => {
     expect(TYPE_ASSERTIONS).toEqual([true, true, true, true, true, true, true]);
-    expect(IMPORT_STAGES).toEqual(['inspecting', 'exporting', 'waveform', 'finalizing']);
+    expect(IMPORT_STAGES).toEqual(['inspecting', 'exporting', 'finalizing']);
   });
 
   it('exports every stable error code from the Android contract', () => {
@@ -212,28 +225,33 @@ describe('TempoLoopMedia TypeScript contract', () => {
     );
   });
 
-  it('uses waveformBinCount and rejects an invalid waveform result', async () => {
+  it('keeps media import audio-only and validates waveform generation separately', async () => {
     const native = createNativeModule();
     const client = createTempoLoopMediaClient(() => native);
     const options: ImportMediaOptions = {
       operationId: 'operation-1',
       sourceUri: 'content://provider/video/1',
       outputAudioUri: 'file:///data/user/0/com.tempoloop.app/files/audio.m4a.partial',
-      waveformBinCount: 3,
       maxAudioSourceBytes: 209_715_200,
       maxVideoSourceBytes: 629_145_600,
     };
 
-    await expect(client.importProjectMedia(options)).rejects.toMatchObject({
-      code: 'E_WAVEFORM_FAILED',
-    });
+    await expect(client.importProjectMedia(options)).resolves.toEqual(VALID_IMPORT_RESULT);
     expect(native.importProjectMedia).toHaveBeenCalledWith(options);
+
+    const waveformOptions: GenerateWaveformOptions = {
+      operationId: 'waveform-1',
+      audioUri: VALID_IMPORT_RESULT.audioUri,
+      durationMs: VALID_IMPORT_RESULT.durationMs,
+      waveformBinCount: 4,
+    };
+    await expect(client.generateWaveform(waveformOptions)).resolves.toEqual(VALID_WAVEFORM_RESULT);
   });
 
   it('accepts finite, bounded waveform samples with the requested bin count', () => {
-    expect(() => assertImportMediaResult(VALID_IMPORT_RESULT, 4)).not.toThrow();
+    expect(() => assertImportMediaResult(VALID_IMPORT_RESULT)).not.toThrow();
     expect(() =>
-      assertImportMediaResult({ ...VALID_IMPORT_RESULT, waveform: [0, Number.NaN, 1, 0] }, 4),
+      assertGenerateWaveformResult({ ...VALID_WAVEFORM_RESULT, samples: [0, Number.NaN, 1, 0] }, 4),
     ).toThrow(TempoLoopMediaContractError);
   });
 
@@ -273,7 +291,7 @@ describe('TempoLoopMedia TypeScript contract', () => {
     );
     const event: ImportProgressEvent = {
       operationId: 'operation-1',
-      stage: 'waveform',
+      stage: 'exporting',
       stageProgress: 0.75,
       overallProgress: 0.8,
     };

@@ -7,7 +7,7 @@ import {
   isSegmentConfigured,
 } from '@/domain/segment';
 
-export type PracticePlaybackIntent = 'pause' | 'resume' | 'play-range';
+export type PracticePlaybackIntent = 'pause' | 'play-range';
 
 export function isPracticeSegmentConfigured(
   segment: DanceSegment,
@@ -48,18 +48,10 @@ export function isPracticeAudioReady(status: PlaybackStatus): boolean {
 
 export function getPracticePlaybackIntent(
   snapshot: PlaybackSnapshot,
-  selectedRange: PlaybackRange,
+  _selectedRange: PlaybackRange,
 ): PracticePlaybackIntent | null {
   if (snapshot.status === 'playing') {
     return 'pause';
-  }
-
-  if (
-    snapshot.status === 'paused' &&
-    snapshot.clipStartMs === selectedRange.playFromMs &&
-    snapshot.clipEndMs === selectedRange.stopAtMs
-  ) {
-    return 'resume';
   }
 
   if (snapshot.status === 'ready' || snapshot.status === 'paused' || snapshot.status === 'ended') {

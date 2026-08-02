@@ -8,8 +8,8 @@ const config: ExpoConfig = {
   version: '1.0.0',
   orientation: 'portrait',
   platforms: ['android'],
-  userInterfaceStyle: 'automatic',
-  icon: './assets/images/tempoloop-icon-v2.png',
+  userInterfaceStyle: 'dark',
+  icon: './assets/images/tempoloop-icon-purple.png',
   updates: {
     enabled: false,
   },
@@ -22,7 +22,7 @@ const config: ExpoConfig = {
     package: 'com.tempoloop.app',
     versionCode: 1,
     adaptiveIcon: {
-      foregroundImage: './assets/images/adaptive-icon.png',
+      foregroundImage: './assets/images/adaptive-icon-purple.png',
       backgroundColor: '#120A24',
     },
     blockedPermissions: [
@@ -44,12 +44,12 @@ const config: ExpoConfig = {
     [
       'expo-splash-screen',
       {
-        image: './assets/images/tempoloop-icon-v2.png',
+        image: './assets/images/tempoloop-icon-purple.png',
         imageWidth: 160,
         resizeMode: 'contain',
-        backgroundColor: '#F7F6F2',
+        backgroundColor: '#120A24',
         dark: {
-          backgroundColor: '#F7F6F2',
+          backgroundColor: '#120A24',
         },
       },
     ],

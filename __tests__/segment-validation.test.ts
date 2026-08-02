@@ -8,6 +8,7 @@ import {
 import {
   DanceProjectSchema,
   DanceSegmentsSchema,
+  LeadInMsSchema,
   PlaybackRateSchema,
   StoredWaveformSchema,
 } from '@/domain/validation';
@@ -84,6 +85,7 @@ describe('segment validation', () => {
         updatedAtIso: '2026-07-30T12:00:00.000Z',
         audioFileName: 'audio.m4a',
         waveformFileName: 'waveform.json',
+        waveformStatus: 'ready',
         durationMs: 10_000,
         sourceDisplayName: null,
         sourceSizeBytes: null,
@@ -102,6 +104,7 @@ describe('segment validation', () => {
       updatedAtIso: '2026-07-30T12:00:00.000Z',
       audioFileName: 'audio.m4a' as const,
       waveformFileName: 'waveform.json' as const,
+      waveformStatus: 'ready' as const,
       durationMs: 10_000,
       sourceDisplayName: 'dance.mp4',
       sourceSizeBytes: 1_000,
@@ -109,11 +112,30 @@ describe('segment validation', () => {
       segments: createEmptySegments(),
     };
 
-    expect(DanceProjectSchema.safeParse(project).success).toBe(true);
+    const legacyResult = DanceProjectSchema.safeParse(project);
+    expect(legacyResult.success).toBe(true);
+    if (legacyResult.success) {
+      expect(legacyResult.data.leadInMs).toBe(6_000);
+    }
+    const { waveformStatus: _waveformStatus, ...projectWithoutWaveformStatus } = project;
+    expect(_waveformStatus).toBe('ready');
+    const legacyWaveformStatus = DanceProjectSchema.parse(projectWithoutWaveformStatus);
+    expect(legacyWaveformStatus.waveformStatus).toBe('ready');
     expect(DanceProjectSchema.safeParse({ ...project, preferredRate: 0.8 }).success).toBe(false);
     expect(DanceProjectSchema.safeParse({ ...project, selectedRate: 0.75 }).success).toBe(false);
     expect(PlaybackRateSchema.safeParse(0.7).success).toBe(true);
     expect(PlaybackRateSchema.safeParse(0.75).success).toBe(false);
+  });
+
+  it('accepts only the four project lead-in values', () => {
+    expect([0, 2_000, 4_000, 6_000].every((value) => LeadInMsSchema.safeParse(value).success)).toBe(
+      true,
+    );
+    expect(
+      [undefined, -1, 1_000, 2_000.5, 2_500, 6_001].every(
+        (value) => !LeadInMsSchema.safeParse(value).success,
+      ),
+    ).toBe(true);
   });
 
   it('requires exactly 2,048 finite normalized waveform samples', () => {

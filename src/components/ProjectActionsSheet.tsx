@@ -6,7 +6,6 @@ import { colors, fontSizes, fontWeights, radii, spacing } from '@/constants/them
 export interface ProjectActionsSheetProps {
   visible: boolean;
   projectName: string;
-  title: string;
   renameLabel: string;
   deleteLabel: string;
   cancelLabel: string;
@@ -18,7 +17,6 @@ export interface ProjectActionsSheetProps {
 export function ProjectActionsSheet({
   visible,
   projectName,
-  title,
   renameLabel,
   deleteLabel,
   cancelLabel,
@@ -36,15 +34,8 @@ export function ProjectActionsSheet({
     >
       <View style={styles.backdrop}>
         <Pressable accessible={false} onPress={onCancel} style={StyleSheet.absoluteFill} />
-        <View
-          accessibilityLabel={`${title}. ${projectName}`}
-          accessibilityViewIsModal
-          style={styles.sheet}
-        >
+        <View accessibilityLabel={projectName} accessibilityViewIsModal style={styles.sheet}>
           <Text accessibilityRole="header" numberOfLines={2} style={styles.title}>
-            {title}
-          </Text>
-          <Text numberOfLines={2} style={styles.projectName}>
             {projectName}
           </Text>
           <View style={styles.actions}>
@@ -76,11 +67,6 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: fontSizes.title,
     fontWeight: fontWeights.bold,
-  },
-  projectName: {
-    color: colors.textMuted,
-    fontSize: fontSizes.body,
-    marginTop: spacing.xxs,
   },
   actions: {
     gap: spacing.sm,

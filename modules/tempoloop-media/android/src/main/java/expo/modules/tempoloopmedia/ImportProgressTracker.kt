@@ -89,10 +89,9 @@ internal class ImportProgressTracker(
     const val DEFAULT_MINIMUM_INTERVAL_MS = 125L
 
     val STAGE_RANGES = mapOf(
-      ImportStage.INSPECTING to (0.0..0.10),
-      ImportStage.EXPORTING to (0.10..0.70),
-      ImportStage.WAVEFORM to (0.70..0.95),
-      ImportStage.FINALIZING to (0.95..1.0)
+      ImportStage.INSPECTING to (0.0..0.15),
+      ImportStage.EXPORTING to (0.15..0.90),
+      ImportStage.FINALIZING to (0.90..1.0)
     )
   }
 }

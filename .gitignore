@@ -1,4 +1,4 @@
-# Local agent contract and environment
+# Local environment
 .agent/
 .env
 .env.*

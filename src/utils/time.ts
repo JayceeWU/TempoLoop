@@ -1,5 +1,4 @@
 const MILLISECONDS_PER_SECOND = 1_000;
-const MILLISECONDS_PER_TENTH = 100;
 const SECONDS_PER_MINUTE = 60;
 
 function assertFiniteNonNegativeMilliseconds(value: number): void {
@@ -38,14 +37,11 @@ export function formatTimeMs(milliseconds: number | null): string {
     throw new RangeError('Milliseconds must be finite.');
   }
 
-  const safeMilliseconds = Math.max(0, Math.round(milliseconds));
-  const minutes = Math.floor(safeMilliseconds / (SECONDS_PER_MINUTE * MILLISECONDS_PER_SECOND));
-  const seconds = Math.floor(
-    (safeMilliseconds % (SECONDS_PER_MINUTE * MILLISECONDS_PER_SECOND)) / MILLISECONDS_PER_SECOND,
-  );
-  const tenths = Math.floor((safeMilliseconds % MILLISECONDS_PER_SECOND) / MILLISECONDS_PER_TENTH);
+  const wholeSeconds = Math.floor(Math.max(0, milliseconds) / MILLISECONDS_PER_SECOND);
+  const minutes = Math.floor(wholeSeconds / SECONDS_PER_MINUTE);
+  const seconds = wholeSeconds % SECONDS_PER_MINUTE;
 
-  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${tenths}`;
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 }
 
 export function formatEditorTime(milliseconds: number | null): string {

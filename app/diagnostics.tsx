@@ -1,8 +1,9 @@
-import { Redirect, Stack, router } from 'expo-router';
+import { Redirect, Stack } from 'expo-router';
 
 import { DiagnosticsScreen } from '@/components/DiagnosticsScreen';
 import { usePlaybackSnapshot } from '@/playback/AudioPlayerProvider';
 import { DEVELOPMENT_DIAGNOSTICS_ENABLED } from '@/services/DiagnosticsService';
+import { navigateBackOrHome } from '@/utils/navigation';
 
 function EnabledDiagnosticsRoute() {
   const playbackSnapshot = usePlaybackSnapshot();
@@ -10,7 +11,7 @@ function EnabledDiagnosticsRoute() {
   return (
     <>
       <Stack.Screen options={{ headerShown: false }} />
-      <DiagnosticsScreen onClose={() => router.back()} playbackSnapshot={playbackSnapshot} />
+      <DiagnosticsScreen onClose={navigateBackOrHome} playbackSnapshot={playbackSnapshot} />
     </>
   );
 }

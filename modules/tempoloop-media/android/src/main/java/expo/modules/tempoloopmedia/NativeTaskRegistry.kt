@@ -18,9 +18,16 @@ internal class NativeTaskRegistry {
     var cancellationRequested: Boolean = false
   )
 
+  private data class WaveformTask(
+    val operationId: String,
+    val job: Job,
+    var cancellationRequested: Boolean = false
+  )
+
   private val lock = Any()
   private val trackedJobs = linkedSetOf<Job>()
   private var activeImport: ImportTask? = null
+  private var activeWaveform: WaveformTask? = null
 
   fun track(job: Job) {
     synchronized(lock) {
@@ -40,10 +47,23 @@ internal class NativeTaskRegistry {
     }
 
     synchronized(lock) {
-      if (activeImport != null) {
+      if (activeImport != null || activeWaveform != null) {
         throw mediaError(TempoLoopMediaError.IMPORT_BUSY)
       }
       activeImport = ImportTask(operationId, job)
+      trackedJobs += job
+    }
+  }
+
+  fun registerWaveform(operationId: String, job: Job) {
+    if (operationId.isBlank()) {
+      throw mediaError(TempoLoopMediaError.UNKNOWN_NATIVE)
+    }
+    synchronized(lock) {
+      if (activeImport != null || activeWaveform != null) {
+        throw mediaError(TempoLoopMediaError.IMPORT_BUSY)
+      }
+      activeWaveform = WaveformTask(operationId, job)
       trackedJobs += job
     }
   }
@@ -102,8 +122,27 @@ internal class NativeTaskRegistry {
     }
   }
 
+  fun cancelWaveform(operationId: String) {
+    val job = synchronized(lock) {
+      val task = activeWaveform
+      if (task == null || task.operationId != operationId || task.cancellationRequested) {
+        null
+      } else {
+        task.cancellationRequested = true
+        task.job
+      }
+    } ?: return
+    job.cancel(ImportCancellationSignal())
+  }
+
   fun isCancellationRequested(operationId: String): Boolean = synchronized(lock) {
     activeImport
+      ?.takeIf { it.operationId == operationId }
+      ?.cancellationRequested == true
+  }
+
+  fun isWaveformCancellationRequested(operationId: String): Boolean = synchronized(lock) {
+    activeWaveform
       ?.takeIf { it.operationId == operationId }
       ?.cancellationRequested == true
   }
@@ -124,6 +163,16 @@ internal class NativeTaskRegistry {
     releaseResources(resources)
   }
 
+  fun completeWaveform(operationId: String, job: Job) {
+    synchronized(lock) {
+      val task = activeWaveform
+      if (task?.operationId == operationId && task.job === job) {
+        activeWaveform = null
+        trackedJobs -= job
+      }
+    }
+  }
+
   fun cancelAll() {
     val cancellation = synchronized(lock) {
       val task = activeImport
@@ -132,6 +181,7 @@ internal class NativeTaskRegistry {
       val jobs = trackedJobs.toList()
       trackedJobs.clear()
       activeImport = null
+      activeWaveform = null
       CancellationBatch(jobs, resources)
     }
 
@@ -143,6 +193,10 @@ internal class NativeTaskRegistry {
 
   internal fun hasActiveImport(): Boolean = synchronized(lock) {
     activeImport != null
+  }
+
+  internal fun hasActiveWaveform(): Boolean = synchronized(lock) {
+    activeWaveform != null
   }
 
   private fun releaseResources(resources: Collection<NativeOperationResource>) {

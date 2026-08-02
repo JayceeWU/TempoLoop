@@ -70,7 +70,7 @@ function diagnosticsSnapshot(commandGeneration = 4): DiagnosticsSnapshot {
     import: {
       storeStatus: 'importing',
       coordinatorActive: true,
-      stage: 'waveform',
+      stage: 'exporting',
       stageProgress: 0.5,
       overallProgress: 0.75,
       cancelRequested: false,

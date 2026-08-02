@@ -3,6 +3,8 @@ export {
   TempoLoopMediaContractError,
   assertImportMediaResult,
   assertImportProgressEvent,
+  assertGenerateWaveformResult,
+  assertWaveformProgressEvent,
   assertMediaInspection,
   assertPickedMediaSource,
   createTempoLoopMediaClient,

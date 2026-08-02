@@ -8,6 +8,8 @@ import { TempoLoopMediaServiceError } from '@/services/TempoLoopMediaService';
 
 const DEFAULT_LOAD_TIMEOUT_MS = 8_000;
 
+export type AudioLoadFailureStage = 'prepare' | 'replace' | 'native-status' | 'timeout';
+
 export interface AudioStatusSubscription {
   remove(): void;
 }
@@ -34,13 +36,28 @@ export interface ExpoAudioPartialValidatorOptions {
   readonly removePlayerOnDispose?: boolean;
 }
 
-function validationError(message: string, cause?: unknown): TempoLoopMediaServiceError {
-  return new TempoLoopMediaServiceError('E_AUDIO_LOAD_FAILED', message, cause);
+export class AudioLoadValidationError extends TempoLoopMediaServiceError {
+  readonly loadFailureStage: AudioLoadFailureStage;
+
+  constructor(stage: AudioLoadFailureStage, message: string, cause?: unknown) {
+    super('E_AUDIO_LOAD_FAILED', message, cause);
+    this.name = 'AudioLoadValidationError';
+    this.loadFailureStage = stage;
+    Object.setPrototypeOf(this, AudioLoadValidationError.prototype);
+  }
+}
+
+function validationError(
+  stage: AudioLoadFailureStage,
+  message: string,
+  cause?: unknown,
+): AudioLoadValidationError {
+  return new AudioLoadValidationError(stage, message, cause);
 }
 
 function assertPrivateFileUri(uri: string): void {
   if (!uri.startsWith('file://') || uri.length <= 'file://'.length) {
-    throw validationError('The exported audio URI is not a local file URI.');
+    throw validationError('prepare', 'The exported audio URI is not a local file URI.');
   }
 }
 
@@ -61,6 +78,7 @@ export class ExpoAudioPartialValidator implements PartialAudioValidator {
   private player: AudioLoadValidationPlayer | null = null;
   private playerPromise: Promise<AudioLoadValidationPlayer> | null = null;
   private activeUri: string | null = null;
+  private attachedUri: string | null = null;
   private abortActiveValidation: (() => void) | null = null;
   private validationGeneration = 0;
 
@@ -74,7 +92,7 @@ export class ExpoAudioPartialValidator implements PartialAudioValidator {
   async validateLoadable(audioUri: string): Promise<void> {
     assertPrivateFileUri(audioUri);
     if (this.activeUri !== null) {
-      throw validationError('Another audio source is already being validated.');
+      throw validationError('prepare', 'Another audio source is already being validated.');
     }
 
     const generation = ++this.validationGeneration;
@@ -85,13 +103,14 @@ export class ExpoAudioPartialValidator implements PartialAudioValidator {
         prepareSharedAudioPlayerForImport();
       } catch (error) {
         throw validationError(
+          'prepare',
           'TempoLoop could not prepare the shared audio player for import validation.',
           error,
         );
       }
       const player = await this.getPlayer();
       if (generation !== this.validationGeneration || this.activeUri !== audioUri) {
-        throw validationError('Audio validation was cancelled.');
+        throw validationError('prepare', 'Audio validation was cancelled.');
       }
       await new Promise<void>((resolve, reject) => {
         let settled = false;
@@ -112,7 +131,9 @@ export class ExpoAudioPartialValidator implements PartialAudioValidator {
         };
         const inspectStatus = (status: AudioStatus) => {
           if (status.error !== null) {
-            finish(validationError('expo-audio could not load the exported audio.'));
+            finish(
+              validationError('native-status', 'expo-audio could not load the exported audio.'),
+            );
             return;
           }
           if (status.isLoaded && Number.isFinite(status.duration) && status.duration > 0) {
@@ -120,22 +141,29 @@ export class ExpoAudioPartialValidator implements PartialAudioValidator {
           }
         };
         const timeout = setTimeout(() => {
-          finish(validationError('expo-audio timed out while loading the exported audio.'));
+          finish(
+            validationError('timeout', 'expo-audio timed out while loading the exported audio.'),
+          );
         }, this.timeoutMs);
         this.abortActiveValidation = () => {
-          finish(validationError('Audio validation was cancelled.'));
+          finish(validationError('prepare', 'Audio validation was cancelled.'));
         };
 
         try {
-          subscription = player.addListener('playbackStatusUpdate', inspectStatus);
+          // Pause before subscribing so an unloaded previous source cannot
+          // emit a pause/error event into the next validation generation.
           player.pause();
+          subscription = player.addListener('playbackStatusUpdate', inspectStatus);
+          this.attachedUri = audioUri;
           player.replace(audioUri);
           // Do not inspect currentStatus here. The shared singleton may still
           // expose the previously loaded Project for a short time after
           // replace(), so only a post-replace playbackStatusUpdate can prove
           // that this partial file was decoded successfully.
         } catch (error) {
-          finish(validationError('expo-audio rejected the exported audio source.', error));
+          finish(
+            validationError('replace', 'expo-audio rejected the exported audio source.', error),
+          );
         }
       });
     } finally {
@@ -146,14 +174,24 @@ export class ExpoAudioPartialValidator implements PartialAudioValidator {
   }
 
   clearSource(audioUri?: string): void {
-    if (audioUri !== undefined && this.activeUri !== null && this.activeUri !== audioUri) {
+    const clearsActive =
+      this.activeUri !== null && (audioUri === undefined || this.activeUri === audioUri);
+    const clearsAttached =
+      this.attachedUri !== null && (audioUri === undefined || this.attachedUri === audioUri);
+    if (!clearsActive && !clearsAttached) {
       return;
     }
-    this.abortActiveValidation?.();
-    this.abortActiveValidation = null;
+
+    if (clearsActive) {
+      this.abortActiveValidation?.();
+      this.abortActiveValidation = null;
+      this.activeUri = null;
+    }
     this.validationGeneration += 1;
-    this.activeUri = null;
-    if (this.player !== null) {
+    if (clearsAttached && this.player !== null) {
+      // Clear the marker before touching native state so repeated finally /
+      // cancellation cleanup is idempotent even if native cleanup throws.
+      this.attachedUri = null;
       try {
         this.player.pause();
         this.player.replace(null);
@@ -180,7 +218,7 @@ export class ExpoAudioPartialValidator implements PartialAudioValidator {
       this.player = await this.playerPromise;
       return this.player;
     } catch (error) {
-      throw validationError('expo-audio could not create the validation player.', error);
+      throw validationError('prepare', 'expo-audio could not create the validation player.', error);
     } finally {
       this.playerPromise = null;
     }

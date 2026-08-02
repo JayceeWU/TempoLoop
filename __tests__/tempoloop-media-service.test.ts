@@ -3,6 +3,9 @@ import type {
   ImportMediaResult,
   ImportProgressEvent,
   ImportProgressListener,
+  GenerateWaveformOptions,
+  GenerateWaveformResult,
+  WaveformProgressListener,
   InspectMediaOptions,
   MediaInspection,
   PickedMediaSource,
@@ -35,7 +38,6 @@ const IMPORT_OPTIONS: ImportMediaOptions = {
   operationId: 'operation-1',
   sourceUri: INSPECT_OPTIONS.sourceUri,
   outputAudioUri: 'file:///private/imports/audio.m4a.partial',
-  waveformBinCount: 4,
   maxAudioSourceBytes: INSPECT_OPTIONS.maxAudioSourceBytes,
   maxVideoSourceBytes: INSPECT_OPTIONS.maxVideoSourceBytes,
 };
@@ -44,7 +46,22 @@ const IMPORT_RESULT: ImportMediaResult = {
   audioUri: IMPORT_OPTIONS.outputAudioUri,
   audioSizeBytes: 250_000,
   durationMs: 90_000,
-  waveform: [0, 0.25, 0.5, 1],
+};
+
+const WAVEFORM_OPTIONS: GenerateWaveformOptions = {
+  operationId: 'waveform-1',
+  audioUri: IMPORT_OPTIONS.outputAudioUri,
+  durationMs: 90_000,
+  waveformBinCount: 4,
+};
+
+const WAVEFORM_RESULT: GenerateWaveformResult = {
+  durationMs: 90_000,
+  sampleCount: 4,
+  samples: [0, 0.25, 0.5, 1],
+  decodedFrameCount: 4_320_000,
+  sampledFrameCount: 1_024,
+  elapsedMs: 200,
 };
 
 interface ClientMock {
@@ -77,12 +94,22 @@ function createClientMock(): ClientMock {
     async () => IMPORT_RESULT,
   );
   const cancelImport = jest.fn<Promise<void>, [string]>(async () => undefined);
+  const generateWaveform = jest.fn<Promise<GenerateWaveformResult>, [GenerateWaveformOptions]>(
+    async () => WAVEFORM_RESULT,
+  );
+  const cancelWaveform = jest.fn<Promise<void>, [string]>(async () => undefined);
   const addImportProgressListener = jest.fn<TempoLoopMediaSubscription, [ImportProgressListener]>(
     (listener) => {
       progressListener = listener;
       return { remove: removeSubscription };
     },
   );
+  const addWaveformProgressListener = jest.fn<
+    TempoLoopMediaSubscription,
+    [WaveformProgressListener]
+  >((_listener) => {
+    return { remove: jest.fn() };
+  });
 
   return {
     client: {
@@ -91,6 +118,9 @@ function createClientMock(): ClientMock {
       importProjectMedia,
       cancelImport,
       addImportProgressListener,
+      generateWaveform,
+      cancelWaveform,
+      addWaveformProgressListener,
     },
     pickGalleryVideo,
     inspectMedia,
@@ -138,14 +168,14 @@ describe('TempoLoopMediaService', () => {
       userMessage: 'This media has an invalid duration. Select another file.',
     });
 
-    native.importProjectMedia.mockResolvedValueOnce({
-      ...IMPORT_RESULT,
-      waveform: [0, Number.NaN, 1, 0.5],
-    });
+    native.client.generateWaveform = jest.fn(async () => ({
+      ...WAVEFORM_RESULT,
+      samples: [0, Number.NaN, 1, 0.5],
+    }));
 
-    await expect(service.importProjectMedia(IMPORT_OPTIONS)).rejects.toMatchObject({
+    await expect(service.generateWaveform(WAVEFORM_OPTIONS)).rejects.toMatchObject({
       code: 'E_WAVEFORM_FAILED',
-      userMessage: 'TempoLoop could not build the waveform. Retry the import.',
+      userMessage: 'TempoLoop could not build the waveform. Retry waveform generation.',
     });
   });
 

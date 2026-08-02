@@ -3,10 +3,15 @@ import TempoLoopMedia, {
   assertImportProgressEvent,
   assertMediaInspection,
   assertPickedMediaSource,
+  assertGenerateWaveformResult,
+  assertWaveformProgressEvent,
   isTempoLoopMediaErrorCode,
   type ImportMediaOptions,
   type ImportMediaResult,
   type ImportProgressEvent,
+  type GenerateWaveformOptions,
+  type GenerateWaveformResult,
+  type WaveformProgressEvent,
   type InspectMediaOptions,
   type TempoLoopMediaApi,
   type TempoLoopMediaClient,
@@ -133,13 +138,55 @@ export class TempoLoopMediaService implements TempoLoopMediaApi {
   importProjectMedia(options: ImportMediaOptions): Promise<ImportMediaResult> {
     return this.invoke(async () => {
       const result: unknown = await this.client.importProjectMedia(options);
-      assertImportMediaResult(result, options.waveformBinCount);
+      assertImportMediaResult(result);
       return result;
     });
   }
 
   cancelImport(operationId: string): Promise<void> {
     return this.invoke(() => this.client.cancelImport(operationId));
+  }
+
+  generateWaveform(options: GenerateWaveformOptions): Promise<GenerateWaveformResult> {
+    return this.invoke(async () => {
+      const result: unknown = await this.client.generateWaveform(options);
+      assertGenerateWaveformResult(result, options.waveformBinCount);
+      return result;
+    });
+  }
+
+  cancelWaveform(operationId: string): Promise<void> {
+    return this.invoke(() => this.client.cancelWaveform(operationId));
+  }
+
+  addWaveformProgressListener(
+    listener: (event: WaveformProgressEvent) => void,
+  ): TempoLoopMediaSubscription {
+    let subscription: TempoLoopMediaSubscription;
+    try {
+      subscription = this.client.addWaveformProgressListener((event) => {
+        try {
+          assertWaveformProgressEvent(event);
+        } catch {
+          return;
+        }
+        listener(event);
+      });
+    } catch (error) {
+      throw toTempoLoopMediaServiceError(error);
+    }
+    let removed = false;
+    return {
+      remove: () => {
+        if (removed) return;
+        removed = true;
+        try {
+          subscription.remove();
+        } catch (error) {
+          throw toTempoLoopMediaServiceError(error);
+        }
+      },
+    };
   }
 
   addImportProgressListener(

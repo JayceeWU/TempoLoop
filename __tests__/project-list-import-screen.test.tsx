@@ -179,10 +179,12 @@ const IMPORTED_PROJECT: DanceProject = {
   updatedAtIso: '2026-07-31T12:00:00.000Z',
   audioFileName: 'audio.m4a',
   waveformFileName: 'waveform.json',
+  waveformStatus: 'ready',
   durationMs: 90_000,
   sourceDisplayName: SELECTION.fileName,
   sourceSizeBytes: SELECTION.sizeBytes,
   selectedRate: 1,
+  leadInMs: 6_000,
   segments: createEmptySegments(),
 };
 
@@ -325,6 +327,8 @@ describe('Android project list', () => {
     await waitFor(() =>
       expect(screen.getByRole('button', { name: COPY.common.rename })).toBeTruthy(),
     );
+    expect(screen.getByRole('header', { name: IMPORTED_PROJECT.name })).toBeTruthy();
+    expect(screen.queryByText(`Actions for ${IMPORTED_PROJECT.name}`)).toBeNull();
     await press(screen.getByRole('button', { name: COPY.common.rename }));
     await waitFor(() => expect(screen.getByLabelText(COPY.import.nameInputLabel)).toBeTruthy());
     await changeText(screen.getByLabelText(COPY.import.nameInputLabel), 'Evening Practice');
@@ -406,7 +410,12 @@ describe('Android import flow', () => {
 
     await waitFor(() => expect(mockImportProject).toHaveBeenCalledTimes(1));
     expect(mockImportProject.mock.calls[0]?.[0]).toMatchObject({ name: 'Practice Track' });
-    await waitFor(() => expect(mockRouterReplace).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(mockRouterPush).toHaveBeenCalledWith({
+        pathname: '/project/[projectId]',
+        params: { projectId: IMPORTED_PROJECT.id },
+      }),
+    );
   });
 
   it('shows native stage progress and requests cancellation only once', async () => {
@@ -422,14 +431,14 @@ describe('Android import flow', () => {
 
     await act(async () => {
       useImportStore.getState().updateProgress('operation-1', {
-        stage: 'waveform',
+        stage: 'exporting',
         stageProgress: 0.4,
         overallProgress: 0.7,
       });
       await Promise.resolve();
     });
     await waitFor(() =>
-      expect(screen.getByLabelText(`${COPY.import.waveform} 70 percent`)).toBeTruthy(),
+      expect(screen.getByLabelText(`${COPY.import.exporting} 70 percent`)).toBeTruthy(),
     );
 
     const cancel = screen.getByRole('button', { name: COPY.import.cancelLabel });
@@ -476,7 +485,12 @@ describe('Android import flow', () => {
       await Promise.resolve();
     });
     await waitFor(() => expect(useImportStore.getState().status).toBe('completed'));
-    await waitFor(() => expect(mockRouterReplace).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(mockRouterPush).toHaveBeenCalledWith({
+        pathname: '/project/[projectId]',
+        params: { projectId: IMPORTED_PROJECT.id },
+      }),
+    );
   });
 
   it('distinguishes a committed-project refresh failure from an import rollback', async () => {

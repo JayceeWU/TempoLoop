@@ -269,10 +269,12 @@ function makeProject(id = PROJECT_ID, updatedAtIso = '2026-07-30T10:00:00.000Z')
     updatedAtIso,
     audioFileName: 'audio.m4a',
     waveformFileName: 'waveform.json',
+    waveformStatus: 'ready',
     durationMs: 120_000,
     sourceDisplayName: null,
     sourceSizeBytes: 1_000,
     selectedRate: 1,
+    leadInMs: 6_000,
     segments: createEmptySegments(),
   };
 }
@@ -327,7 +329,6 @@ function finalizeInput(
       audioUri: layout.importPartialAudioUri(projectId),
       audioSizeBytes: 32,
       durationMs,
-      waveform: waveformFile(durationMs).samples,
       ...overrides.result,
     },
     ...(overrides.createdAtIso === undefined ? {} : { createdAtIso: overrides.createdAtIso }),
@@ -386,6 +387,22 @@ describe('Android project repository and recovery', () => {
     expect(repository.getMediaStatus(PROJECT_ID)).toEqual({ state: 'ready', issues: [] });
   });
 
+  test('loads legacy schema-v1 metadata without leadInMs using the six-second default', async () => {
+    const fileSystem = new MemoryStorageFileSystem();
+    const { layout, repository } = makeRepository(fileSystem);
+    layout.ensureBaseDirectories();
+    const legacyProject = { ...makeProject() } as Partial<DanceProject>;
+    delete legacyProject.leadInMs;
+    fileSystem.ensureDirectory(layout.projectDirectoryUri(PROJECT_ID));
+    fileSystem.putFile(layout.projectMetadataUri(PROJECT_ID), JSON.stringify(legacyProject));
+    fileSystem.putFile(layout.projectAudioUri(PROJECT_ID), 'audio', 32);
+    fileSystem.putFile(layout.projectWaveformUri(PROJECT_ID), JSON.stringify(waveformFile()));
+
+    await repository.initialize();
+
+    expect(repository.get(PROJECT_ID)?.leadInMs).toBe(6_000);
+  });
+
   test('ignores corrupt project metadata and reports it without crashing discovery', async () => {
     const fileSystem = new MemoryStorageFileSystem();
     const { layout, repository } = makeRepository(fileSystem);
@@ -429,6 +446,25 @@ describe('Android project repository and recovery', () => {
       state: 'needs-repair',
       issues: ['WAVEFORM_INVALID'],
     });
+  });
+
+  test('keeps pending and failed projects playable without a waveform file', async () => {
+    const fileSystem = new MemoryStorageFileSystem();
+    const { layout, repository } = makeRepository(fileSystem);
+    layout.ensureBaseDirectories();
+    for (const [id, waveformStatus] of [
+      [PROJECT_ID, 'pending'],
+      [SECOND_PROJECT_ID, 'failed'],
+    ] as const) {
+      const project = { ...makeProject(id), waveformStatus };
+      fileSystem.putFile(layout.projectMetadataUri(id), JSON.stringify(project));
+      fileSystem.putFile(layout.projectAudioUri(id), 'audio', 32);
+    }
+
+    await repository.initialize();
+
+    expect(repository.getMediaStatus(PROJECT_ID)).toEqual({ state: 'ready', issues: [] });
+    expect(repository.getMediaStatus(SECOND_PROJECT_ID)).toEqual({ state: 'ready', issues: [] });
   });
 
   test('removes only imports and validated-sibling temp files older than one hour', async () => {
@@ -494,9 +530,12 @@ describe('Android project repository and recovery', () => {
     expect(project.sourceDisplayName).toBe('dance.mp4');
     expect(project.sourceSizeBytes).toBe(2_000);
     expect(project.durationMs).toBe(120_000);
+    expect(project.leadInMs).toBe(6_000);
+    expect(project.waveformStatus).toBe('pending');
     expect(fileSystem.directoryExists(layout.importDirectoryUri(PROJECT_ID))).toBe(false);
     expect(fileSystem.directoryExists(layout.projectDirectoryUri(PROJECT_ID))).toBe(true);
     expect(fileSystem.fileExists(layout.projectAudioUri(PROJECT_ID))).toBe(true);
+    expect(fileSystem.fileExists(layout.projectWaveformUri(PROJECT_ID))).toBe(false);
     expect(fileSystem.fileExists(projectJournalUri(layout))).toBe(false);
     expect(JSON.parse(await fileSystem.readText(layout.projectMetadataUri(PROJECT_ID)))).toEqual(
       project,
@@ -508,7 +547,7 @@ describe('Android project repository and recovery', () => {
       },
     ]);
     expect(fileSystem.directoryMoveFileNames).toEqual([
-      ['audio.m4a', 'import.json', 'project.json.tmp', 'waveform.json'],
+      ['audio.m4a', 'import.json', 'project.json.tmp'],
     ]);
   });
 
@@ -570,8 +609,8 @@ describe('Android project repository and recovery', () => {
       { inspection: { durationMs: 0 } },
       { inspection: { sourceSizeBytes: 0 } },
       { result: { durationMs: 0 } },
-      { result: { waveform: [0] } },
-      { result: { waveform: [...waveformFile().samples.slice(0, 2047), Number.NaN] } },
+      { result: { audioSizeBytes: 0 } },
+      { result: { durationMs: 0 } },
     ];
 
     for (const overrides of invalidInputs) {
@@ -926,7 +965,7 @@ describe('Android project repository and recovery', () => {
     });
   });
 
-  test('atomically persists selected rate and deletes only the requested project directory', async () => {
+  test('atomically persists practice preferences and deletes only the requested project directory', async () => {
     const fileSystem = new MemoryStorageFileSystem();
     const { layout, repository } = makeRepository(fileSystem);
     layout.ensureBaseDirectories();
@@ -936,6 +975,11 @@ describe('Android project repository and recovery', () => {
 
     await repository.updateSelectedRate(PROJECT_ID, 0.8);
     expect(repository.get(PROJECT_ID)?.selectedRate).toBe(0.8);
+    await repository.updateLeadInMs(PROJECT_ID, 2_000);
+    expect(repository.get(PROJECT_ID)?.leadInMs).toBe(2_000);
+    expect(
+      JSON.parse(await fileSystem.readText(layout.projectMetadataUri(PROJECT_ID))),
+    ).toMatchObject({ selectedRate: 0.8, leadInMs: 2_000 });
     await repository.delete(PROJECT_ID);
 
     expect(repository.get(PROJECT_ID)).toBeNull();

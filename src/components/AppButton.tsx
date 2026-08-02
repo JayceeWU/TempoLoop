@@ -12,7 +12,7 @@ import {
 import { colors, fontSizes, fontWeights, minimumTapSize, radii, spacing } from '@/constants/theme';
 
 type AppButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
-type AppButtonSize = 'regular' | 'large';
+type AppButtonSize = 'compact' | 'regular' | 'large';
 
 export interface AppButtonProps extends Omit<PressableProps, 'children' | 'style'> {
   label: string;
@@ -48,6 +48,7 @@ export function AppButton({
       hitSlop={4}
       style={({ pressed }) => [
         styles.base,
+        size === 'compact' && styles.compact,
         size === 'large' && styles.large,
         selectedVariant.button,
         fullWidth && styles.fullWidth,
@@ -64,7 +65,12 @@ export function AppButton({
           {leadingAccessory}
           <Text
             numberOfLines={1}
-            style={[styles.label, selectedVariant.label, isDisabled && styles.disabledLabel]}
+            style={[
+              styles.label,
+              size === 'compact' && styles.compactLabel,
+              selectedVariant.label,
+              isDisabled && styles.disabledLabel,
+            ]}
           >
             {label}
           </Text>
@@ -88,6 +94,12 @@ const styles = StyleSheet.create({
   large: {
     minHeight: 56,
     paddingHorizontal: spacing.lg,
+  },
+  compact: {
+    borderRadius: radii.sm,
+    minHeight: minimumTapSize,
+    paddingHorizontal: spacing.xs,
+    paddingVertical: spacing.xxs,
   },
   fullWidth: {
     alignSelf: 'stretch',
@@ -126,6 +138,9 @@ const styles = StyleSheet.create({
   label: {
     fontSize: fontSizes.button,
     fontWeight: fontWeights.semibold,
+  },
+  compactLabel: {
+    fontSize: fontSizes.caption,
   },
   lightLabel: {
     color: colors.textOnAccent,

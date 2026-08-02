@@ -21,8 +21,10 @@ import {
   importCoordinator,
 } from '@/services/ImportCoordinator';
 import { TempoLoopMediaServiceError } from '@/services/TempoLoopMediaService';
+import { waveformGenerationCoordinator } from '@/services/WaveformGenerationCoordinator';
 import { useImportStore } from '@/stores/useImportStore';
 import { useProjectStore } from '@/stores/useProjectStore';
+import { useWaveformStore } from '@/stores/useWaveformStore';
 import { formatBinaryMegabytes } from '@/utils/file';
 import type { ImportStage } from '../modules/tempoloop-media';
 
@@ -71,8 +73,6 @@ function progressPhaseLabel(stage: ImportStage | null): string {
       return COPY.import.inspecting;
     case 'exporting':
       return COPY.import.exporting;
-    case 'waveform':
-      return COPY.import.waveform;
     case 'finalizing':
       return COPY.import.finalizing;
   }
@@ -124,6 +124,12 @@ export default function ProjectListScreen() {
   }, [importSelectionId, importSourceMetadata, importSourceUri, importStatus, importSuggestedName]);
 
   const projects = useProjectStore((state) => state.projects);
+  const waveformActiveProjectId = useWaveformStore((state) => state.activeProjectId);
+  const waveformQueuedProjectIds = useWaveformStore((state) => state.queuedProjectIds);
+  const waveformBlocksImport =
+    waveformActiveProjectId !== null ||
+    waveformQueuedProjectIds.length > 0 ||
+    projects.some((project) => project.waveformStatus === 'pending');
   const isLoading = useProjectStore((state) => state.isLoading);
   const error = useProjectStore((state) => state.error);
   const pendingProjectId = useProjectStore((state) => state.pendingProjectId);
@@ -170,7 +176,8 @@ export default function ProjectListScreen() {
         selectionRequestInFlightRef.current ||
         selection !== null ||
         importUiActive ||
-        importCoordinator.isImportActive()
+        importCoordinator.isImportActive() ||
+        waveformBlocksImport
       ) {
         return;
       }
@@ -187,7 +194,7 @@ export default function ProjectListScreen() {
           selectionRequestInFlightRef.current = false;
         });
     },
-    [importUiActive, selection, showImportError],
+    [importUiActive, selection, showImportError, waveformBlocksImport],
   );
 
   const handleExtractFromVideo = useCallback(() => {
@@ -244,7 +251,7 @@ export default function ProjectListScreen() {
         }
 
         try {
-          router.replace({
+          router.push({
             pathname: '/project/[projectId]',
             params: { projectId: project.id },
           });
@@ -360,6 +367,7 @@ export default function ProjectListScreen() {
               clearConfirmationGuard();
               void (async () => {
                 await clearProjectPlaybackSource(project.id);
+                await waveformGenerationCoordinator.cancelProject(project.id);
                 await deleteProject(project.id);
               })().catch(showActionError);
             },
@@ -431,7 +439,7 @@ export default function ProjectListScreen() {
       <View style={styles.importActions}>
         <AppButton
           accessibilityHint={COPY.projectList.extractVideoAccessibilityHint}
-          disabled={isLoading || importUiActive}
+          disabled={isLoading || importUiActive || waveformBlocksImport}
           fullWidth
           label={COPY.projectList.extractVideo}
           onPress={handleExtractFromVideo}
@@ -439,7 +447,7 @@ export default function ProjectListScreen() {
         />
         <AppButton
           accessibilityHint={COPY.projectList.importAudioAccessibilityHint}
-          disabled={isLoading || importUiActive}
+          disabled={isLoading || importUiActive || waveformBlocksImport}
           fullWidth
           label={COPY.projectList.importAudio}
           onPress={handleImportAudio}
@@ -447,6 +455,12 @@ export default function ProjectListScreen() {
           variant="secondary"
         />
       </View>
+
+      {waveformBlocksImport ? (
+        <Text accessibilityLiveRegion="polite" style={styles.waveformBlockingMessage}>
+          {COPY.projectList.waveformBlocksImport}
+        </Text>
+      ) : null}
 
       <FlatList
         contentContainerStyle={[
@@ -504,11 +518,6 @@ export default function ProjectListScreen() {
         }}
         projectName={actionProject?.name ?? ''}
         renameLabel={COPY.common.rename}
-        title={
-          actionProject === null
-            ? COPY.projectList.projectActionsTitle('')
-            : COPY.projectList.projectActionsTitle(actionProject.name)
-        }
         visible={actionProject !== null}
       />
 
@@ -555,6 +564,13 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     paddingBottom: spacing.md,
     paddingHorizontal: spacing.lg,
+  },
+  waveformBlockingMessage: {
+    color: colors.textMuted,
+    fontSize: fontSizes.caption,
+    paddingBottom: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    textAlign: 'center',
   },
   listContent: {
     paddingBottom: spacing.xxl,

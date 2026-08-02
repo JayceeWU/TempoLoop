@@ -1,10 +1,17 @@
 import {
   MAX_WAVEFORM_RENDER_BARS,
   clampWaveformPosition,
+  clampWaveformViewport,
   createWaveformPathData,
+  createWaveformViewport,
   downsampleWaveform,
+  followWaveformPlayhead,
   getWaveformRenderBarCount,
+  panWaveformViewportFromOverview,
+  sliceWaveformForViewport,
   waveformPositionFromX,
+  waveformPositionFromViewportX,
+  zoomWaveformViewport,
 } from '@/domain/waveform';
 
 describe('waveform domain', () => {
@@ -46,6 +53,64 @@ describe('waveform domain', () => {
     expect(waveformPositionFromX(250, 200, 60_000)).toBe(60_000);
     expect(clampWaveformPosition(60_000.6, 60_000)).toBe(60_000);
     expect(clampWaveformPosition(-5, 60_000)).toBe(0);
+  });
+
+  test('creates a 30-second viewport and handles short tracks', () => {
+    expect(createWaveformViewport(120_000)).toEqual({ startMs: 0, durationMs: 30_000 });
+    expect(createWaveformViewport(8_000)).toEqual({ startMs: 0, durationMs: 8_000 });
+    expect(createWaveformViewport(0)).toEqual({ startMs: 0, durationMs: 0 });
+  });
+
+  test('zooms around the focal time and clamps the window to 10-30 seconds', () => {
+    const initial = createWaveformViewport(120_000);
+
+    expect(zoomWaveformViewport(initial, 2, 0.5, 120_000)).toEqual({
+      startMs: 7_500,
+      durationMs: 15_000,
+    });
+    expect(zoomWaveformViewport(initial, 10, 0.5, 120_000)).toEqual({
+      startMs: 10_000,
+      durationMs: 10_000,
+    });
+    expect(
+      zoomWaveformViewport({ startMs: 40_000, durationMs: 10_000 }, 0.1, 0.5, 120_000),
+    ).toEqual({ startMs: 30_000, durationMs: 30_000 });
+  });
+
+  test('maps overview panning and main-waveform seeking through the viewport', () => {
+    expect(panWaveformViewportFromOverview(150, 200, 0.5, 30_000, 120_000)).toEqual({
+      startMs: 75_000,
+      durationMs: 30_000,
+    });
+    expect(panWaveformViewportFromOverview(300, 200, 0.5, 30_000, 120_000)).toEqual({
+      startMs: 90_000,
+      durationMs: 30_000,
+    });
+    expect(
+      waveformPositionFromViewportX(50, 200, { startMs: 60_000, durationMs: 30_000 }, 120_000),
+    ).toBe(67_500);
+  });
+
+  test('slices only visible waveform bins and follows a playhead outside the window', () => {
+    const samples = Array.from({ length: 12 }, (_, index) => index / 12);
+    expect(
+      sliceWaveformForViewport(samples, { startMs: 30_000, durationMs: 30_000 }, 120_000),
+    ).toEqual(samples.slice(3, 6));
+    expect(followWaveformPlayhead({ startMs: 0, durationMs: 30_000 }, 31_000, 120_000)).toEqual({
+      startMs: 26_500,
+      durationMs: 30_000,
+    });
+    expect(
+      followWaveformPlayhead({ startMs: 20_000, durationMs: 30_000 }, 30_000, 120_000),
+    ).toEqual({ startMs: 20_000, durationMs: 30_000 });
+  });
+
+  test('rejects invalid viewport geometry', () => {
+    expect(() => clampWaveformViewport({ startMs: 0, durationMs: 20_000 }, -1)).toThrow(RangeError);
+    expect(() => zoomWaveformViewport(createWaveformViewport(60_000), 0, 0.5, 60_000)).toThrow(
+      RangeError,
+    );
+    expect(() => panWaveformViewportFromOverview(10, 0, 0.5, 30_000, 60_000)).toThrow(RangeError);
   });
 
   test('builds one upper path and an optional mirrored lower path', () => {

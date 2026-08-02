@@ -1,11 +1,18 @@
 export const MAX_WAVEFORM_RENDER_BARS = 400;
 export const WAVEFORM_BAR_SLOT_WIDTH = 3;
+export const DEFAULT_WAVEFORM_VIEWPORT_MS = 30_000;
+export const MIN_WAVEFORM_VIEWPORT_MS = 10_000;
 
 export type WaveformDownsampleMode = 'maximum' | 'rms';
 
 export interface WaveformPathData {
   readonly upper: string;
   readonly lower: string | null;
+}
+
+export interface WaveformViewport {
+  readonly startMs: number;
+  readonly durationMs: number;
 }
 
 function assertFiniteNumber(value: number, label: string): void {
@@ -89,6 +96,182 @@ export function clampWaveformPosition(positionMs: number, durationMs: number): n
   }
 
   return Math.min(durationMs, Math.max(0, Math.round(positionMs)));
+}
+
+function normalizedTrackDuration(durationMs: number): number {
+  assertFiniteNumber(durationMs, 'Waveform duration');
+  if (durationMs < 0) {
+    throw new RangeError('Waveform duration must be non-negative.');
+  }
+
+  return Math.round(durationMs);
+}
+
+export function clampWaveformViewport(
+  viewport: WaveformViewport,
+  totalDurationMs: number,
+  minimumDurationMs = MIN_WAVEFORM_VIEWPORT_MS,
+  maximumDurationMs = DEFAULT_WAVEFORM_VIEWPORT_MS,
+): WaveformViewport {
+  const total = normalizedTrackDuration(totalDurationMs);
+  assertFiniteNumber(viewport.startMs, 'Waveform viewport start');
+  assertFiniteNumber(viewport.durationMs, 'Waveform viewport duration');
+  assertFiniteNumber(minimumDurationMs, 'Minimum waveform viewport duration');
+  assertFiniteNumber(maximumDurationMs, 'Maximum waveform viewport duration');
+
+  if (minimumDurationMs <= 0 || maximumDurationMs < minimumDurationMs) {
+    throw new RangeError('Waveform viewport duration limits are invalid.');
+  }
+  if (total === 0) {
+    return { startMs: 0, durationMs: 0 };
+  }
+
+  const minimum = Math.min(total, Math.round(minimumDurationMs));
+  const maximum = Math.min(total, Math.round(maximumDurationMs));
+  const durationMs = Math.min(maximum, Math.max(minimum, Math.round(viewport.durationMs)));
+  const startMs = Math.min(total - durationMs, Math.max(0, Math.round(viewport.startMs)));
+
+  return { startMs, durationMs };
+}
+
+export function createWaveformViewport(totalDurationMs: number): WaveformViewport {
+  return clampWaveformViewport(
+    { startMs: 0, durationMs: DEFAULT_WAVEFORM_VIEWPORT_MS },
+    totalDurationMs,
+  );
+}
+
+export function zoomWaveformViewport(
+  viewport: WaveformViewport,
+  scale: number,
+  focalRatio: number,
+  totalDurationMs: number,
+): WaveformViewport {
+  assertFiniteNumber(scale, 'Waveform zoom scale');
+  assertFiniteNumber(focalRatio, 'Waveform zoom focal ratio');
+  if (scale <= 0) {
+    throw new RangeError('Waveform zoom scale must be greater than zero.');
+  }
+
+  const current = clampWaveformViewport(viewport, totalDurationMs);
+  if (current.durationMs === 0) {
+    return current;
+  }
+
+  const ratio = Math.min(1, Math.max(0, focalRatio));
+  const focalTimeMs = current.startMs + current.durationMs * ratio;
+  const nextDurationMs = clampWaveformViewport(
+    { startMs: 0, durationMs: current.durationMs / scale },
+    totalDurationMs,
+  ).durationMs;
+
+  return clampWaveformViewport(
+    {
+      startMs: focalTimeMs - nextDurationMs * ratio,
+      durationMs: nextDurationMs,
+    },
+    totalDurationMs,
+  );
+}
+
+export function panWaveformViewportFromOverview(
+  locationX: number,
+  measuredWidth: number,
+  dragOffsetRatio: number,
+  viewportDurationMs: number,
+  totalDurationMs: number,
+): WaveformViewport {
+  assertFiniteNumber(locationX, 'Waveform overview touch position');
+  assertFiniteNumber(measuredWidth, 'Measured waveform overview width');
+  assertFiniteNumber(dragOffsetRatio, 'Waveform overview drag offset');
+  if (measuredWidth <= 0) {
+    throw new RangeError('Measured waveform overview width must be greater than zero.');
+  }
+
+  const total = normalizedTrackDuration(totalDurationMs);
+  if (total === 0) {
+    return { startMs: 0, durationMs: 0 };
+  }
+
+  const clampedX = Math.min(measuredWidth, Math.max(0, locationX));
+  const offset = Math.min(1, Math.max(0, dragOffsetRatio));
+  const requestedStartMs = (clampedX / measuredWidth) * total - viewportDurationMs * offset;
+
+  return clampWaveformViewport(
+    { startMs: requestedStartMs, durationMs: viewportDurationMs },
+    total,
+  );
+}
+
+export function waveformPositionFromViewportX(
+  locationX: number,
+  measuredWidth: number,
+  viewport: WaveformViewport,
+  totalDurationMs: number,
+): number {
+  assertFiniteNumber(locationX, 'Waveform touch position');
+  assertFiniteNumber(measuredWidth, 'Measured waveform width');
+  if (measuredWidth <= 0) {
+    throw new RangeError('Measured waveform width must be greater than zero.');
+  }
+
+  const normalizedViewport = clampWaveformViewport(viewport, totalDurationMs);
+  const clampedX = Math.min(measuredWidth, Math.max(0, locationX));
+  return clampWaveformPosition(
+    normalizedViewport.startMs + (clampedX / measuredWidth) * normalizedViewport.durationMs,
+    totalDurationMs,
+  );
+}
+
+export function sliceWaveformForViewport(
+  amplitudes: readonly number[],
+  viewport: WaveformViewport,
+  totalDurationMs: number,
+): number[] {
+  amplitudes.forEach(assertValidAmplitude);
+  const total = normalizedTrackDuration(totalDurationMs);
+  if (amplitudes.length === 0 || total === 0) {
+    return [];
+  }
+
+  const normalizedViewport = clampWaveformViewport(viewport, total);
+  const sourceStart = Math.min(
+    amplitudes.length - 1,
+    Math.max(0, Math.floor((normalizedViewport.startMs / total) * amplitudes.length)),
+  );
+  const sourceEnd = Math.min(
+    amplitudes.length,
+    Math.max(
+      sourceStart + 1,
+      Math.ceil(
+        ((normalizedViewport.startMs + normalizedViewport.durationMs) / total) * amplitudes.length,
+      ),
+    ),
+  );
+
+  return amplitudes.slice(sourceStart, sourceEnd);
+}
+
+export function followWaveformPlayhead(
+  viewport: WaveformViewport,
+  positionMs: number,
+  totalDurationMs: number,
+): WaveformViewport {
+  const current = clampWaveformViewport(viewport, totalDurationMs);
+  const position = clampWaveformPosition(positionMs, totalDurationMs);
+  const endMs = current.startMs + current.durationMs;
+
+  if (position >= current.startMs && position <= endMs) {
+    return current;
+  }
+
+  return clampWaveformViewport(
+    {
+      startMs: position - current.durationMs * 0.15,
+      durationMs: current.durationMs,
+    },
+    totalDurationMs,
+  );
 }
 
 export function waveformPositionFromX(

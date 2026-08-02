@@ -126,6 +126,9 @@ function ProjectCardComponent({
           <Text numberOfLines={1} style={styles.projectSummary}>
             {COPY.projectList.projectSummary(duration, configuredCount)}
           </Text>
+          <Text numberOfLines={1} style={styles.waveformStatus}>
+            {COPY.projectList.waveformStatus[project.waveformStatus]}
+          </Text>
           <Text numberOfLines={1} style={styles.updated}>
             {updated}
           </Text>
@@ -200,6 +203,12 @@ const styles = StyleSheet.create({
   },
   updated: {
     color: colors.textMuted,
+    fontSize: fontSizes.caption,
+    lineHeight: 18,
+    marginTop: spacing.xxs,
+  },
+  waveformStatus: {
+    color: colors.accent,
     fontSize: fontSizes.caption,
     lineHeight: 18,
     marginTop: spacing.xxs,

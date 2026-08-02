@@ -112,7 +112,10 @@ export class RecoveryService {
       issues.push('AUDIO_MISSING_OR_EMPTY');
     }
 
-    if (!this.layout.fileSystem.fileExists(waveformUri)) {
+    if (project.waveformStatus !== 'ready') {
+      // Pending and failed waveforms do not make otherwise playable audio a
+      // damaged project. The foreground coordinator resumes or retries them.
+    } else if (!this.layout.fileSystem.fileExists(waveformUri)) {
       issues.push('WAVEFORM_MISSING');
     } else {
       try {
@@ -339,11 +342,7 @@ export class RecoveryService {
       return false;
     }
 
-    const waveformUri = this.layout.fileSystem.join(
-      projectDirectoryUri,
-      PROJECT_WAVEFORM_FILE_NAME,
-    );
-    return (await this.readWaveform(waveformUri, project.durationMs)) !== null;
+    return true;
   }
 
   private async readImportJournal(uri: string): Promise<ImportTransactionJournal | null> {

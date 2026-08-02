@@ -25,11 +25,11 @@ describe('time formatting', () => {
   });
 
   it.each([
-    [0, '00:00.0'],
-    [59_999, '00:59.9'],
-    [60_000, '01:00.0'],
-    [63_200, '01:03.2'],
-    [3_600_000, '60:00.0'],
+    [0, '00:00'],
+    [59_999, '00:59'],
+    [60_000, '01:00'],
+    [63_200, '01:03'],
+    [3_600_000, '60:00'],
   ])('formats editor time %i ms as %s', (milliseconds, expected) => {
     expect(formatEditorTime(milliseconds)).toBe(expected);
   });

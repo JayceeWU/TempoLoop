@@ -26,6 +26,38 @@ class NativeTaskRegistryTest {
   }
 
   @Test
+  fun `import and waveform tasks are mutually exclusive`() {
+    val registry = NativeTaskRegistry()
+    val waveformJob = Job()
+    registry.registerWaveform("waveform-1", waveformJob)
+
+    val importError = assertThrows(TempoLoopMediaException::class.java) {
+      registry.registerImport("import-1", Job())
+    }
+    assertEquals("E_IMPORT_BUSY", importError.code)
+
+    registry.completeWaveform("waveform-1", waveformJob)
+    registry.registerImport("import-1", Job())
+    val waveformError = assertThrows(TempoLoopMediaException::class.java) {
+      registry.registerWaveform("waveform-2", Job())
+    }
+    assertEquals("E_IMPORT_BUSY", waveformError.code)
+  }
+
+  @Test
+  fun `waveform cancellation is idempotent`() {
+    val registry = NativeTaskRegistry()
+    val job = Job()
+    registry.registerWaveform("waveform-1", job)
+
+    registry.cancelWaveform("waveform-1")
+    registry.cancelWaveform("waveform-1")
+
+    assertTrue(job.isCancelled)
+    assertTrue(registry.isWaveformCancellationRequested("waveform-1"))
+  }
+
+  @Test
   fun `completion releases resources and opens the import slot`() {
     val registry = NativeTaskRegistry()
     val firstJob = Job()

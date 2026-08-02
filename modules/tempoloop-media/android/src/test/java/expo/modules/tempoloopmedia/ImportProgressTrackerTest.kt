@@ -30,12 +30,12 @@ class ImportProgressTrackerTest {
     clock.advance(125L)
     tracker.update(0.6)
     assertEquals(2, events.size)
-    assertEquals(0.06, events.last().overallProgress!!, 0.000_001)
+    assertEquals(0.09, events.last().overallProgress!!, 0.000_001)
 
     tracker.completeStage()
     tracker.begin(ImportStage.EXPORTING)
     assertEquals(4, events.size)
-    assertEquals(0.10, events.last().overallProgress!!, 0.000_001)
+    assertEquals(0.15, events.last().overallProgress!!, 0.000_001)
   }
 
   @Test
@@ -55,8 +55,6 @@ class ImportProgressTrackerTest {
     tracker.completeStage()
     tracker.begin(ImportStage.EXPORTING)
     tracker.update(0.5)
-    tracker.completeStage()
-    tracker.begin(ImportStage.WAVEFORM)
     tracker.completeStage()
     tracker.begin(ImportStage.FINALIZING)
     tracker.completeStage()

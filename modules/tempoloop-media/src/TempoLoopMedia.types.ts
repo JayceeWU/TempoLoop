@@ -1,4 +1,4 @@
-export const IMPORT_STAGES = ['inspecting', 'exporting', 'waveform', 'finalizing'] as const;
+export const IMPORT_STAGES = ['inspecting', 'exporting', 'finalizing'] as const;
 
 export type ImportStage = (typeof IMPORT_STAGES)[number];
 
@@ -56,7 +56,6 @@ export interface ImportMediaOptions {
   operationId: string;
   sourceUri: string;
   outputAudioUri: string;
-  waveformBinCount: number;
   maxAudioSourceBytes: number;
   maxVideoSourceBytes: number;
 }
@@ -65,7 +64,22 @@ export interface ImportMediaResult {
   audioUri: string;
   audioSizeBytes: number;
   durationMs: number;
-  waveform: number[];
+}
+
+export interface GenerateWaveformOptions {
+  operationId: string;
+  audioUri: string;
+  durationMs: number;
+  waveformBinCount: number;
+}
+
+export interface GenerateWaveformResult {
+  durationMs: number;
+  sampleCount: number;
+  samples: number[];
+  decodedFrameCount: number;
+  sampledFrameCount: number;
+  elapsedMs: number;
 }
 
 export interface ImportProgressEvent {
@@ -73,6 +87,11 @@ export interface ImportProgressEvent {
   stage: ImportStage;
   stageProgress: number | null;
   overallProgress: number | null;
+}
+
+export interface WaveformProgressEvent {
+  operationId: string;
+  progress: number;
 }
 
 export interface TempoLoopMediaApi {
@@ -83,6 +102,10 @@ export interface TempoLoopMediaApi {
   importProjectMedia(options: ImportMediaOptions): Promise<ImportMediaResult>;
 
   cancelImport(operationId: string): Promise<void>;
+
+  generateWaveform(options: GenerateWaveformOptions): Promise<GenerateWaveformResult>;
+
+  cancelWaveform(operationId: string): Promise<void>;
 }
 
 export interface TempoLoopMediaSubscription {
@@ -90,9 +113,11 @@ export interface TempoLoopMediaSubscription {
 }
 
 export type ImportProgressListener = (event: ImportProgressEvent) => void;
+export type WaveformProgressListener = (event: WaveformProgressEvent) => void;
 
 export interface TempoLoopMediaClient extends TempoLoopMediaApi {
   addImportProgressListener(listener: ImportProgressListener): TempoLoopMediaSubscription;
+  addWaveformProgressListener(listener: WaveformProgressListener): TempoLoopMediaSubscription;
 }
 
 /**
@@ -101,7 +126,7 @@ export interface TempoLoopMediaClient extends TempoLoopMediaApi {
  */
 export interface TempoLoopMediaNativeModule extends TempoLoopMediaApi {
   addListener(
-    eventName: 'onImportProgress',
+    eventName: 'onImportProgress' | 'onWaveformProgress',
     listener: (event: unknown) => void,
   ): TempoLoopMediaSubscription;
 }

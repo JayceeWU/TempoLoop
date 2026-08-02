@@ -90,16 +90,19 @@ class TempoLoopMediaInstrumentationTest {
     assertEquals(Uri.fromFile(output).toString(), result.audioUri)
     assertTrue(result.audioSizeBytes > 0L)
     assertTrue(result.durationMs > 0L)
-    assertEquals(WAVEFORM_BIN_COUNT, result.waveform.size)
-    assertTrue(result.waveform.all { it.isFinite() && it in 0.0..1.0 })
-    assertTrue(result.waveform.any { it > 0.0 })
+    val generated = WaveformGenerator(Dispatchers.IO).generate(
+      output, result.durationMs, WAVEFORM_BIN_COUNT
+    )
+    assertEquals(WAVEFORM_BIN_COUNT, generated.samples.size)
+    assertTrue(generated.samples.all { it.isFinite() && it in 0.0..1.0 })
+    assertTrue(generated.samples.any { it > 0.0 })
+    assertTrue(generated.sampledFrameCount <= WAVEFORM_BIN_COUNT * 256L)
     assertAudioOnlyAac(output)
 
     assertEquals(
       listOf(
         ImportStage.INSPECTING,
         ImportStage.EXPORTING,
-        ImportStage.WAVEFORM,
         ImportStage.FINALIZING
       ),
       progressEvents.map(ImportProgressEvent::stage).distinct()
@@ -146,8 +149,11 @@ class TempoLoopMediaInstrumentationTest {
 
     assertEquals(requestedOutputUri, result.audioUri)
     assertTrue(result.audioSizeBytes > 0L)
-    assertEquals(WAVEFORM_BIN_COUNT, result.waveform.size)
-    assertTrue(result.waveform.all { it.isFinite() && it in 0.0..1.0 })
+    val generated = WaveformGenerator(Dispatchers.IO).generate(
+      output, result.durationMs, WAVEFORM_BIN_COUNT
+    )
+    assertEquals(WAVEFORM_BIN_COUNT, generated.samples.size)
+    assertTrue(generated.samples.all { it.isFinite() && it in 0.0..1.0 })
     assertAudioOnlyAac(output)
   }
 
@@ -169,9 +175,9 @@ class TempoLoopMediaInstrumentationTest {
     )
 
     assertTrue(validated.durationMs in 1L..1_000L)
-    assertEquals(WAVEFORM_BIN_COUNT, waveform.size)
-    assertTrue(waveform.all { it.isFinite() && it in 0.0..1.0 })
-    assertTrue(waveform.any { it > 0.0 })
+    assertEquals(WAVEFORM_BIN_COUNT, waveform.samples.size)
+    assertTrue(waveform.samples.all { it.isFinite() && it in 0.0..1.0 })
+    assertTrue(waveform.samples.any { it > 0.0 })
   }
 
   @Test
@@ -191,7 +197,7 @@ class TempoLoopMediaInstrumentationTest {
       binCount = WAVEFORM_BIN_COUNT
     )
 
-    assertEquals(List(WAVEFORM_BIN_COUNT) { 0.0 }, waveform)
+    assertEquals(List(WAVEFORM_BIN_COUNT) { 0.0 }, waveform.samples)
   }
 
   @Test
@@ -215,9 +221,9 @@ class TempoLoopMediaInstrumentationTest {
 
     assertEquals(2, inspection.channelCount)
     assertEquals(SourceMediaKind.AUDIO, inspection.sourceKind)
-    assertEquals(WAVEFORM_BIN_COUNT, waveform.size)
-    assertTrue(waveform.all { it.isFinite() && it in 0.0..1.0 })
-    assertTrue(waveform.any { it > 0.0 })
+    assertEquals(WAVEFORM_BIN_COUNT, waveform.samples.size)
+    assertTrue(waveform.samples.all { it.isFinite() && it in 0.0..1.0 })
+    assertTrue(waveform.samples.any { it > 0.0 })
   }
 
   @Test
@@ -248,7 +254,6 @@ class TempoLoopMediaInstrumentationTest {
       context = context,
       ioDispatcher = Dispatchers.IO,
       mediaInspector = MediaInspector(context, Dispatchers.IO),
-      waveformGenerator = WaveformGenerator(Dispatchers.IO),
       audioExporter = Media3AudioExporter(context, Handler(Looper.getMainLooper())),
       taskRegistry = taskRegistry,
       progressSink = ImportProgressSink { event -> progressEvents.add(event) },
@@ -262,7 +267,6 @@ class TempoLoopMediaInstrumentationTest {
           operationId = operationId,
           sourceUri = sourceUri,
           outputAudioUri = outputAudioUri,
-          waveformBinCount = WAVEFORM_BIN_COUNT,
           maxAudioSourceBytes = MAX_AUDIO_SOURCE_BYTES,
           maxVideoSourceBytes = MAX_VIDEO_SOURCE_BYTES
         )

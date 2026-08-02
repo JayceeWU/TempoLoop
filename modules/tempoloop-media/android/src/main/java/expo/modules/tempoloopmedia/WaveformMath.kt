@@ -10,7 +10,8 @@ import kotlin.math.sqrt
  */
 internal class WaveformAccumulator(
   private val durationUs: Long,
-  val binCount: Int
+  val binCount: Int,
+  private val maximumSamplesPerBin: Int = Int.MAX_VALUE
 ) {
   private val sumOfSquares = DoubleArray(binCount)
   private val sampleCounts = LongArray(binCount)
@@ -20,16 +21,20 @@ internal class WaveformAccumulator(
     require(binCount > 0) { "binCount must be positive" }
   }
 
-  fun add(timeUs: Long, amplitude: Double) {
-    if (!amplitude.isFinite()) {
-      return
-    }
-
-    val safeAmplitude = amplitude.coerceIn(0.0, 1.0)
+  fun addEnergy(timeUs: Long, energy: Double): Boolean {
+    if (!energy.isFinite()) return false
     val index = WaveformMath.binIndex(timeUs, durationUs, binCount)
-    sumOfSquares[index] += safeAmplitude * safeAmplitude
+    if (sampleCounts[index] >= maximumSamplesPerBin.toLong()) return false
+    sumOfSquares[index] += energy.coerceIn(0.0, 1.0)
     sampleCounts[index] += 1L
+    return true
   }
+
+  fun add(timeUs: Long, amplitude: Double) {
+    addEnergy(timeUs, amplitude * amplitude)
+  }
+
+  fun sampledFrameCount(): Long = sampleCounts.sum()
 
   fun finish(): List<Double> {
     val rmsBins = DoubleArray(binCount)

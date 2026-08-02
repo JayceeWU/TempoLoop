@@ -1,4 +1,4 @@
-import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, render, waitFor, within } from '@testing-library/react-native';
 import { Alert, type AlertButton } from 'react-native';
 
 import SegmentEditorScreen from '../app/project/[projectId]/segments';
@@ -12,6 +12,7 @@ import { useProjectStore } from '@/stores/useProjectStore';
 const mockRouterBack = jest.fn();
 const mockRouterReplace = jest.fn();
 const mockNavigationDispatch = jest.fn();
+let mockCanGoBack = true;
 let mockRouteParams: {
   projectId?: string | string[];
   origin?: string | string[];
@@ -37,6 +38,7 @@ jest.mock('expo-router', () => {
           mockPreventRemoveCallback?.({ data: { action: { type: 'GO_BACK' } } });
         }
       },
+      canGoBack: () => mockCanGoBack,
       replace: (href: unknown) => {
         mockRouterReplace(href);
         if (mockPreventRemoveEnabled) {
@@ -120,10 +122,12 @@ const PROJECT: DanceProject = {
   updatedAtIso: '2026-07-30T12:00:00.000Z',
   audioFileName: 'audio.m4a',
   waveformFileName: 'waveform.json',
+  waveformStatus: 'ready',
   durationMs: 90_000,
   sourceDisplayName: null,
   sourceSizeBytes: 1_024,
   selectedRate: 0.8,
+  leadInMs: 6_000,
   segments: [
     { id: 'segment-1', index: 0, startMs: 10_000, endMs: 20_000 },
     { id: 'segment-2', index: 1, startMs: 15_000, endMs: 25_000 },
@@ -197,7 +201,7 @@ async function renderPreparedEditor() {
 
   await waitFor(() => {
     expect(screen.getByText('Test Waveform')).toBeTruthy();
-    expect(screen.getByText('Segment 6')).toBeTruthy();
+    expect(screen.getByLabelText('Segment 6')).toBeTruthy();
     expect(mockEnterEditor).toHaveBeenCalledWith({
       projectId: PROJECT.id,
       audioUri: 'file:///documents/TempoLoop/projects/project-1/audio.m4a',
@@ -235,6 +239,7 @@ async function pressLatestAlertButton(label: string): Promise<void> {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockCanGoBack = true;
   mockRouteParams = {
     projectId: PROJECT.id,
     origin: 'practice',
@@ -264,12 +269,33 @@ afterEach(() => {
 });
 
 describe('segment editor screen', () => {
-  it('enters full-track 1.0x editor mode and renders six rows with tenths', async () => {
+  it('keeps playback and segment capture available while the waveform is pending', async () => {
+    useProjectStore.setState({
+      projects: [{ ...PROJECT, waveformStatus: 'pending' }],
+    });
+
+    const screen = await render(<SegmentEditorScreen />);
+
+    await waitFor(() => expect(screen.getByText('Building waveform 0%')).toBeTruthy());
+    expect(screen.getByRole('button', { name: 'Play' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Set Segment 1 start' })).toBeEnabled();
+    expect(waveformLoader.load).not.toHaveBeenCalled();
+  });
+
+  it('keeps the compact audio panel outside the segment scroller and renders six rows', async () => {
     const screen = await renderPreparedEditor();
 
-    expect(screen.getByText('00:04.0 / 01:30.0')).toBeTruthy();
-    expect(screen.getByText('Editor playback: 1.0x')).toBeTruthy();
-    expect(screen.getAllByText(/^Segment [1-6]$/)).toHaveLength(6);
+    expect(screen.getByText('00:04 / 01:30')).toBeTruthy();
+    expect(screen.queryByText('Editor playback: 1.0x')).toBeNull();
+    expect(screen.getByTestId('segment-editor-audio-panel')).toBeTruthy();
+    expect(
+      within(screen.getByTestId('segment-editor-segment-scroll')).queryByTestId(
+        'segment-editor-audio-panel',
+      ),
+    ).toBeNull();
+    for (let segment = 1; segment <= 6; segment += 1) {
+      expect(screen.getByLabelText(`Segment ${segment}`)).toBeTruthy();
+    }
     expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
   });
 
@@ -278,12 +304,12 @@ describe('segment editor screen', () => {
 
     mockGetCurrentPositionMs.mockReturnValueOnce(10_349.6);
     await fireEvent.press(screen.getByRole('button', { name: 'Set Segment 3 start' }));
-    expect(screen.getByText('Start set to 00:10.3')).toBeTruthy();
+    expect(screen.getByText('Start set to 00:10')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
 
     mockGetCurrentPositionMs.mockReturnValueOnce(PROJECT.durationMs + 1_000);
     await fireEvent.press(screen.getByRole('button', { name: 'Set Segment 3 end' }));
-    expect(screen.getByText('End set to 01:30.0')).toBeTruthy();
+    expect(screen.getByText('End set to 01:30')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
 
     await fireEvent.press(screen.getByRole('button', { name: 'Save' }));

@@ -63,6 +63,10 @@ internal enum class TempoLoopMediaError(
     "E_WAVEFORM_FAILED",
     "The waveform could not be generated."
   ),
+  AUDIO_NOT_FOUND(
+    "E_AUDIO_NOT_FOUND",
+    "The project audio is missing."
+  ),
   PATH_OUTSIDE_APP(
     "E_PATH_OUTSIDE_APP",
     "The output path is outside app-private storage."

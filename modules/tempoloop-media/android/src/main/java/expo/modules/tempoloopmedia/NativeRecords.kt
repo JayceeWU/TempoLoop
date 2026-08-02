@@ -40,7 +40,6 @@ data class ImportMediaOptions(
   @Field val operationId: String,
   @Field val sourceUri: String,
   @Field val outputAudioUri: String,
-  @Field val waveformBinCount: Int,
   @Field val maxAudioSourceBytes: Long,
   @Field val maxVideoSourceBytes: Long
 ) : Record
@@ -49,14 +48,30 @@ data class ImportMediaOptions(
 data class ImportMediaResult(
   @Field val audioUri: String,
   @Field val audioSizeBytes: Long,
+  @Field val durationMs: Long
+) : Record
+
+@OptimizedRecord
+data class GenerateWaveformOptions(
+  @Field val operationId: String,
+  @Field val audioUri: String,
   @Field val durationMs: Long,
-  @Field val waveform: List<Double>
+  @Field val waveformBinCount: Int
+) : Record
+
+@OptimizedRecord
+data class GenerateWaveformResult(
+  @Field val durationMs: Long,
+  @Field val sampleCount: Int,
+  @Field val samples: List<Double>,
+  @Field val decodedFrameCount: Long,
+  @Field val sampledFrameCount: Long,
+  @Field val elapsedMs: Long
 ) : Record
 
 enum class ImportStage(val value: String) : Enumerable {
   INSPECTING("inspecting"),
   EXPORTING("exporting"),
-  WAVEFORM("waveform"),
   FINALIZING("finalizing")
 }
 
@@ -66,4 +81,10 @@ data class ImportProgressEvent(
   @Field val stage: ImportStage,
   @Field val stageProgress: Double?,
   @Field val overallProgress: Double?
+) : Record
+
+@OptimizedRecord
+data class WaveformProgressEvent(
+  @Field val operationId: String,
+  @Field val progress: Double
 ) : Record

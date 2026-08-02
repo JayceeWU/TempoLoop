@@ -16,6 +16,7 @@
     "format": "prettier --check ."
   },
   "dependencies": {
+    "@expo/ui": "~57.0.8",
     "expo": "~57.0.9",
     "expo-asset": "~57.0.8",
     "expo-audio": "~57.0.3",
@@ -41,8 +42,11 @@
     "zustand": "^5.0.14"
   },
   "devDependencies": {
+    "@emnapi/core": "^1.11.3",
+    "@emnapi/runtime": "^1.11.3",
     "@testing-library/react-native": "^14.0.1",
     "@types/jest": "^29.5.14",
+    "@types/node": "^26.1.2",
     "@types/react": "~19.2.2",
     "@types/react-test-renderer": "^19.1.0",
     "eslint": "^9.39.5",
