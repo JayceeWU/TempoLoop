@@ -1,6 +1,6 @@
 import { SEGMENT_COUNT } from '@/constants/app';
 
-export const SEGMENT_INDEXES = [0, 1, 2, 3, 4, 5] as const;
+export const SEGMENT_INDEXES = [0, 1, 2, 3, 4, 5, 6, 7, 8] as const;
 export const SEGMENT_IDS = [
   'segment-1',
   'segment-2',
@@ -8,6 +8,9 @@ export const SEGMENT_IDS = [
   'segment-4',
   'segment-5',
   'segment-6',
+  'segment-7',
+  'segment-8',
+  'segment-9',
 ] as const;
 
 export type SegmentIndex = (typeof SEGMENT_INDEXES)[number];
@@ -21,6 +24,9 @@ export interface DanceSegment {
 }
 
 export type DanceSegments = [
+  DanceSegment,
+  DanceSegment,
+  DanceSegment,
   DanceSegment,
   DanceSegment,
   DanceSegment,

@@ -545,12 +545,14 @@ describe('ImportCoordinator transaction', () => {
     await expect(
       harness.coordinator.importProject({ selection: firstSelection!, name: 'First' }),
     ).rejects.toMatchObject({ code: 'E_AUDIO_LOAD_FAILED' });
+    expect(harness.repository.finalizeImport).not.toHaveBeenCalled();
 
     const secondSelection = await harness.coordinator.selectAudio();
     expect(secondSelection).not.toBeNull();
     await expect(
       harness.coordinator.importProject({ selection: secondSelection!, name: 'Second' }),
     ).resolves.toMatchObject({ id: projectTwoId, name: 'Second' });
+    expect(harness.repository.finalizeImport).toHaveBeenCalledTimes(1);
   });
 
   it('imports MP3 content renamed with an M4S extension through the audio transaction', async () => {

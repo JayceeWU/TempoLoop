@@ -973,13 +973,13 @@ describe('Android project repository and recovery', () => {
     seedProject(fileSystem, layout, makeProject(SECOND_PROJECT_ID));
     await repository.initialize();
 
-    await repository.updateSelectedRate(PROJECT_ID, 0.8);
-    expect(repository.get(PROJECT_ID)?.selectedRate).toBe(0.8);
+    await repository.updateSelectedRate(PROJECT_ID, 0.6);
+    expect(repository.get(PROJECT_ID)?.selectedRate).toBe(0.6);
     await repository.updateLeadInMs(PROJECT_ID, 2_000);
     expect(repository.get(PROJECT_ID)?.leadInMs).toBe(2_000);
     expect(
       JSON.parse(await fileSystem.readText(layout.projectMetadataUri(PROJECT_ID))),
-    ).toMatchObject({ selectedRate: 0.8, leadInMs: 2_000 });
+    ).toMatchObject({ selectedRate: 0.6, leadInMs: 2_000 });
     await repository.delete(PROJECT_ID);
 
     expect(repository.get(PROJECT_ID)).toBeNull();

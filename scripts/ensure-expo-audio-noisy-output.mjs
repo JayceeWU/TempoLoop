@@ -9,6 +9,15 @@ const moduleSourcePath = resolve(
   process.cwd(),
   'node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioModule.kt',
 );
+const expoAudioPackagePath = resolve(process.cwd(), 'node_modules/expo-audio/package.json');
+const supportedExpoAudioVersion = '57.0.3';
+const installedExpoAudioVersion = JSON.parse(readFileSync(expoAudioPackagePath, 'utf8')).version;
+
+if (installedExpoAudioVersion !== supportedExpoAudioVersion) {
+  throw new Error(
+    `Unsupported expo-audio version ${String(installedExpoAudioVersion)}; expected ${supportedExpoAudioVersion}.`,
+  );
+}
 
 function applyExactPatch(sourcePath, original, configured, label) {
   const source = readFileSync(sourcePath, 'utf8');
@@ -47,6 +56,15 @@ const replaceMediaSource = `            mediaSource?.let {
                 player.ref.play()
               }
             }`;
+
+const replaceFunctionSignature =
+  '      Function("replace") { player: AudioPlayer, source: AudioSource ->';
+applyExactPatch(
+  moduleSourcePath,
+  replaceFunctionSignature,
+  '      Function("replace") { player: AudioPlayer, source: AudioSource? ->',
+  'replace(null) nullable Android bridge parameter',
+);
 
 applyExactPatch(
   moduleSourcePath,

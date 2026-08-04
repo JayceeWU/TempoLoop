@@ -2,7 +2,7 @@ import type { ExpoConfig } from 'expo/config';
 
 const config: ExpoConfig = {
   name: 'TempoLoop',
-  owner: 'jwu453',
+  owner: 'jaycee.ucsc',
   slug: 'tempoloop',
   scheme: 'tempoloop',
   version: '1.0.0',
@@ -15,7 +15,7 @@ const config: ExpoConfig = {
   },
   extra: {
     eas: {
-      projectId: 'b2ba5951-4f59-4fdf-83a4-ad1798b8e452',
+      projectId: 'f15bd21b-a9d8-4625-8fed-bddd75d658d9',
     },
   },
   android: {

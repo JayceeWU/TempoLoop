@@ -1,6 +1,6 @@
 # TempoLoop
 
-TempoLoop is a private, offline Android 7.0+ dance-practice app. It can extract music from a gallery video or directly import an audio file, normalize the result to an audio-only M4A in the app sandbox, and let one local user define six independent, overlapping practice segments. Each segment can play at `1.0x`, `0.9x`, `0.8x`, or `0.7x`, with a per-project lead-in of `0`, `2`, `4`, or `6` seconds.
+TempoLoop is a private, offline Android 7.0+ dance-practice app. It can extract music from a gallery video or directly import an audio file, normalize the result to an audio-only M4A in the app sandbox, and let one local user define nine independent, overlapping practice segments. Each segment can play at `1.0x`, `0.9x`, `0.8x`, `0.7x`, or `0.6x`, with a per-project lead-in of `0`, `2`, `4`, or `6` seconds.
 
 Version 1 is Android-only, English-only, and portrait-only. It has no account, analytics, cloud sync, server, background playback, lock-screen controls, broad media-library access, or Google Play release flow.
 
@@ -12,11 +12,11 @@ TempoLoop is especially useful for dance teachers during class. Preparing the mu
 
 1. Use `Extract from Video` to choose a gallery video, or `Import Audio` to choose a supported audio file.
 2. Name the Project. TempoLoop creates and validates a private `audio.m4a` copy, then opens the Project immediately. It builds the 2,048-sample waveform asynchronously while TempoLoop remains in the foreground; the selected source is never modified.
-3. Open `Edit Segments` and define up to six independent ranges. Overlapping ranges are allowed, while incomplete or invalid ranges cannot be saved.
-4. On the practice screen, choose one of four playback speeds and a `0`, `2`, `4`, or `6` second lead-in.
+3. Open `Edit Segments` and define up to nine independent ranges. Overlapping ranges are allowed, while incomplete or invalid ranges cannot be saved.
+4. On the practice screen, choose one of five playback speeds and a `0`, `2`, `4`, or `6` second lead-in.
 5. Press Play to start from `max(0, segment start - lead-in)` and stop at the saved segment end. Pressing Pause resets the range to that same start position, so the next Play begins from the start instead of resuming from the paused position. Segment completion also resets the range for another repetition.
 
-The Segment Editor keeps its audio controls fixed above the scrolling six-segment list. Its compact purple waveform shows a 30-second window by default, supports pinch zoom from 10 to 30 seconds, and includes a full-track overview for moving the visible window. Editor playback remains at `1.0x`, and pausing in the editor retains the current position so it can be captured as a segment endpoint.
+The Segment Editor keeps its audio controls fixed above the scrolling nine-segment list. Its compact purple waveform shows a 30-second window by default, supports pinch zoom from 10 to 30 seconds, and includes a full-track overview for moving the visible window. Editor playback remains at `1.0x`, and pausing in the editor retains the current position so it can be captured as a segment endpoint.
 
 ## Architecture
 
@@ -26,7 +26,8 @@ The Segment Editor keeps its audio controls fixed above the scrolling six-segmen
 - Both paths return only an opaque `content://` or local `file://` source. JavaScript never opens, copies, converts, or deletes the selected media.
 - The Android-only local Expo module `TempoLoopMedia` uses `ContentResolver`, MediaExtractor/MediaCodec, and Media3 Transformer to identify the source, enforce the 600 MiB video or 200 MiB audio limit, and export AAC/M4A. A separate low-priority foreground task decodes the private audio and produces exactly 2,048 normalized RMS samples using deterministic stratified sampling capped at 256 PCM frames per bin. It does not pass media bytes through JavaScript.
 - `expo-audio` `57.0.3` owns the single application player. The editor and practice routes borrow that player through one root provider; import validation borrows the same instance instead of creating another player.
-- A fail-fast postinstall patch enables Media3's `setHandleAudioBecomingNoisy(true)` and supplies SDK 57's missing Android `replace(null)` cleanup with `stop` plus `clearMediaItems`. The first change handles headphone or Bluetooth output loss; the second releases import staging files before their atomic rename. It configures the installed player and does not introduce a custom Kotlin player.
+- A fail-fast postinstall patch enables Media3's `setHandleAudioBecomingNoisy(true)` and fixes SDK 57.0.3's Android `replace(null)` bridge by making its `AudioSource` parameter nullable, then synchronously calling `stop` plus `clearMediaItems`. The first change handles headphone or Bluetooth output loss; the second releases import staging files before their atomic rename. It configures the installed player and does not introduce a custom Kotlin player.
+- TempoLoop never sends `replace(null)` merely because an already-empty player is idle. It clears Media3 only after import validation has attached a staging source or when the playback coordinator owns a loaded Project source; this avoids device-specific empty-source bridge failures without weakening transactional cleanup.
 - `PlaybackCoordinator` serializes source, mode, segment, seek, rate, exit, and reset commands with generation tokens. `SegmentEndGuard` uses the 50 ms native status stream and one rate-adjusted deadline fallback; it does not poll with `setInterval`.
 - The coordinator rejects unsolicited native restarts after focus loss or foreground return; only a new explicit user Play action authorizes playback. Practice Pause prepares the selected range from its lead-in again, while editor Pause intentionally retains the current timestamp.
 - Project metadata and waveform JSON are Zod-validated and transactionally written. A playable Project becomes visible after its exported audio is load-validated and its import directory is atomically finalized with `waveformStatus: pending`. Waveform generation then writes `waveform.json` before atomically changing the status to `ready`; failure retains the audio and exposes a retry action.
@@ -109,6 +110,9 @@ npm run eas -- build --platform android --profile development
 The `eas` script pins only the temporary EAS config parser to `eas-cli@21.4.0` and
 `typescript@5.9.3`. This avoids a current `typescript@7`/EAS dynamic-config incompatibility while
 the TempoLoop application itself continues to use the TypeScript version in `package-lock.json`.
+The wrapper also sets `EAS_NO_VCS=1` because repeated Windows file locks prevented EAS from
+removing its temporary Git shallow clone. The expected no-VCS warning is safe for this workflow;
+the upload still uses the project root and its `.gitignore` rules.
 
 Install the resulting internal APK, then start Metro:
 
@@ -159,7 +163,7 @@ Development APKs have successfully completed EAS builds and have been installed 
 - `content://` imports including approximately 20 MB, 200–300 MB, and 550–600 MiB videos, plus audio at and above the 200 MiB limit.
 - AAC video, video without audio, very short audio, silence, stereo, malformed media, DRM, cancellation, low storage, and force-close recovery.
 - Import and playback memory targets, start latency of 300 ms or less, and persistent playback after the original video is deleted.
-- All four rates, useful pitch correction, every `0/2/4/6` second source-time lead-in, Pause-to-range-start behavior, and segment-end overshoot of 100 ms or less.
+- All five rates, useful pitch correction, every `0/2/4/6` second source-time lead-in, Pause-to-range-start behavior, and segment-end overshoot of 100 ms or less.
 - Rapid commands, calls/audio-focus loss, headphone and Bluetooth disconnects, background/foreground transitions, and no automatic resume.
 - Coverage installation with private data retained and a complete Preview flow in airplane mode.
 
@@ -172,6 +176,7 @@ Record real device model, Android version, measurements, Media3 resolution, and 
 - **APK cannot update:** confirm `com.tempoloop.app` and the signing key match the installed build. Uninstall only if losing local data is acceptable.
 - **A gallery video is missing:** confirm Android has indexed it, then retry `Extract from Video`. The final fallback opens the system file browser near `Pictures/Screenshots` on Android 8+.
 - **One source will not import:** retry with a common unprotected MP4/MOV video or a device-decodable MP3, M4A/AAC, WAV, FLAC, or OGG/Opus audio file. Renamed `.m4s` files are supported only when native inspection finds a valid decodable audio track. Preserve the stable error code when reporting a failure.
+- **A second import or Project deletion fails until the app restarts:** run `npm ci` so the fail-fast Expo Audio 57.0.3 postinstall patch is applied, then build and install a new Development or Preview APK over the existing app. Metro reloads cannot apply this native bridge fix. Do not uninstall first if the existing private Projects must be retained.
 - **Waveform is still building:** the Project is already playable and its Segment times can be edited. Keep TempoLoop in the foreground until the status changes to `Waveform ready`. If it changes to `Waveform unavailable`, open the Segment Editor and use the retry action.
 - **Slow playback changes pitch:** verify `shouldCorrectPitch` is enabled and test a freshly rebuilt APK with the lockfile's `expo-audio` version.
 - **A segment stops late:** record rate, device model, source format, and measured overshoot in `IMPLEMENTATION_NOTES.md` before considering the contract's isolated native boundary guard.

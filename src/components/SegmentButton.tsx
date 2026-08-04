@@ -23,7 +23,8 @@ export function SegmentButton({
 }: SegmentButtonProps) {
   const configured = isPracticeSegmentConfigured(segment, durationMs);
   const disabled = !configured || interactionDisabled;
-  const label = COPY.practice.segmentLabel(segmentDisplayNumber(segment.index));
+  const displayNumber = segmentDisplayNumber(segment.index);
+  const accessibilityLabel = COPY.practice.segmentLabel(displayNumber);
   const range = configured
     ? `${formatSegmentTime(segment.startMs)} \u2013 ${formatSegmentTime(segment.endMs)}`
     : '--:-- \u2013 --:--';
@@ -31,7 +32,7 @@ export function SegmentButton({
   return (
     <Pressable
       accessibilityHint={configured ? undefined : COPY.practice.segmentUnavailableHint}
-      accessibilityLabel={`${label}, ${range}`}
+      accessibilityLabel={`${accessibilityLabel}, ${range}`}
       accessibilityRole="button"
       accessibilityState={{ disabled, selected }}
       disabled={disabled}
@@ -44,7 +45,7 @@ export function SegmentButton({
         interactionDisabled && configured && styles.busyButton,
       ]}
     >
-      <View>
+      <View style={styles.content}>
         <Text
           style={[
             styles.label,
@@ -52,7 +53,7 @@ export function SegmentButton({
             !configured && styles.unconfiguredLabel,
           ]}
         >
-          {label}
+          {displayNumber}
         </Text>
         <Text
           style={[
@@ -94,10 +95,14 @@ const styles = StyleSheet.create({
   busyButton: {
     opacity: 0.65,
   },
+  content: {
+    alignItems: 'center',
+  },
   label: {
     color: colors.text,
     fontSize: fontSizes.body,
     fontWeight: fontWeights.semibold,
+    textAlign: 'center',
   },
   selectedLabel: {
     color: colors.textOnAccent,
@@ -106,6 +111,7 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     fontSize: fontSizes.caption,
     marginTop: spacing.xxs,
+    textAlign: 'center',
   },
   selectedRange: {
     color: colors.textOnAccent,

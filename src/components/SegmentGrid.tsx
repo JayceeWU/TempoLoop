@@ -21,9 +21,9 @@ export function SegmentGrid({
 }: SegmentGridProps) {
   return (
     <View style={styles.grid}>
-      {[0, 2, 4].map((rowStart) => (
+      {[0, 3, 6].map((rowStart) => (
         <View key={rowStart} style={styles.row}>
-          {segments.slice(rowStart, rowStart + 2).map((segment) => (
+          {segments.slice(rowStart, rowStart + 3).map((segment) => (
             <SegmentButton
               durationMs={durationMs}
               interactionDisabled={interactionDisabled}

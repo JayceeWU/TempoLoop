@@ -345,15 +345,18 @@ export class PlaybackCoordinator {
 
   clearSource(projectId?: string): boolean {
     this.assertUsable();
-    if (projectId !== undefined && this.currentProjectId !== projectId) {
+    if (
+      projectId !== undefined &&
+      this.currentProjectId !== null &&
+      this.currentProjectId !== projectId
+    ) {
       return false;
     }
 
     this.nextGeneration();
-    // Import validation borrows the shared player while the home screen is
-    // usually already idle. Some Android player implementations reject a
-    // redundant replace(null), so only mutate native state when this
-    // coordinator actually owns a loaded source.
+    // An idle coordinator has no Project source to release. Some Android
+    // devices reject replace(null) when the native player is already empty,
+    // so only touch Media3 when this coordinator owns an actual source.
     if (this.currentSourceUri !== null) {
       this.player.pause();
       this.player.replace(null);

@@ -126,14 +126,34 @@ function indexedSegmentSchema(index: SegmentIndex) {
     .superRefine(addSegmentValidationIssue);
 }
 
-export const DanceSegmentsSchema: z.ZodType<DanceSegments> = z.tuple([
+const NineDanceSegmentsSchema = z.tuple([
   indexedSegmentSchema(0),
   indexedSegmentSchema(1),
   indexedSegmentSchema(2),
   indexedSegmentSchema(3),
   indexedSegmentSchema(4),
   indexedSegmentSchema(5),
+  indexedSegmentSchema(6),
+  indexedSegmentSchema(7),
+  indexedSegmentSchema(8),
 ]);
+
+/** Preserve existing six-segment schema-v1 projects by appending three empty rows. */
+export const DanceSegmentsSchema: z.ZodType<DanceSegments> = z.preprocess((value) => {
+  if (!Array.isArray(value) || value.length !== 6) {
+    return value;
+  }
+
+  return [
+    ...value,
+    ...SEGMENT_INDEXES.slice(6).map((index) => ({
+      id: SEGMENT_IDS[index],
+      index,
+      startMs: null,
+      endMs: null,
+    })),
+  ];
+}, NineDanceSegmentsSchema);
 
 export const PlaybackRateSchema = z.union(PLAYBACK_RATES.map((rate) => z.literal(rate)));
 export const LeadInMsSchema = z.union(LEAD_IN_OPTIONS_MS.map((leadInMs) => z.literal(leadInMs)));

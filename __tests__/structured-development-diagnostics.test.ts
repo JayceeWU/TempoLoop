@@ -64,4 +64,24 @@ describe('StructuredDevelopmentDiagnostics', () => {
 
     expect(log.getEntries()).toEqual([]);
   });
+
+  test('records shared-player cleanup as an audio load failure stage', () => {
+    const log = new DevelopmentLog({ enabled: true });
+    const diagnostics = new StructuredDevelopmentDiagnostics({ enabled: true, log });
+
+    diagnostics.recordAudioLoadFailure({
+      operationId: 'operation-cleanup',
+      error: {
+        code: 'E_AUDIO_LOAD_FAILED',
+        loadFailureStage: 'cleanup',
+        message: 'private native cleanup details',
+      },
+    });
+
+    expect(log.getEntries()).toHaveLength(1);
+    expect(log.getEntries()[0]).toMatchObject({
+      event: 'audio.load.failed',
+      context: expect.objectContaining({ failureStage: 'cleanup' }),
+    });
+  });
 });

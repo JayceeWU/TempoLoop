@@ -15,6 +15,7 @@ import { colors, fontSizes, fontWeights, spacing } from '@/constants/theme';
 import type { DanceProject } from '@/domain/project';
 import { ProjectNameSchema } from '@/domain/validation';
 import { clearProjectPlaybackSource } from '@/playback/PlaybackSourceLifecycle';
+import { developmentLog } from '@/services/DevelopmentLog';
 import {
   ImportCoordinatorError,
   type SelectedMedia,
@@ -36,6 +37,12 @@ function isCancellation(error: unknown): boolean {
       'code' in error &&
       error.code === 'E_IMPORT_CANCELLED')
   );
+}
+
+function diagnosticErrorCode(error: unknown): string {
+  return typeof error === 'object' && error !== null && 'code' in error
+    ? String(error.code)
+    : 'E_UNKNOWN';
 }
 
 function importErrorMessage(error: unknown): string {
@@ -366,9 +373,25 @@ export default function ProjectListScreen() {
             onPress: () => {
               clearConfirmationGuard();
               void (async () => {
-                await clearProjectPlaybackSource(project.id);
+                try {
+                  await clearProjectPlaybackSource(project.id);
+                } catch (error) {
+                  developmentLog.record('error', 'project.delete.failed', {
+                    stage: 'player-cleanup',
+                    code: diagnosticErrorCode(error),
+                  });
+                  throw error;
+                }
                 await waveformGenerationCoordinator.cancelProject(project.id);
-                await deleteProject(project.id);
+                try {
+                  await deleteProject(project.id);
+                } catch (error) {
+                  developmentLog.record('error', 'project.delete.failed', {
+                    stage: 'repository-delete',
+                    code: diagnosticErrorCode(error),
+                  });
+                  throw error;
+                }
               })().catch(showActionError);
             },
             style: 'destructive',

@@ -16,7 +16,7 @@ export type SegmentEndpoint = 'startMs' | 'endMs';
 
 export function createSegmentDraft(segments: readonly DanceSegment[]): DanceSegments {
   if (segments.length !== SEGMENT_INDEXES.length) {
-    throw new Error('A segment draft requires exactly six rows.');
+    throw new Error('A segment draft requires exactly nine rows.');
   }
 
   return SEGMENT_INDEXES.map((index) => {

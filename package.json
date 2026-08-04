@@ -6,7 +6,7 @@
   "scripts": {
     "postinstall": "node scripts/ensure-expo-audio-noisy-output.mjs",
     "start": "expo start --dev-client",
-    "eas": "npx --yes --package typescript@5.9.3 --package eas-cli@21.4.0 eas",
+    "eas": "node scripts/run-eas.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "expo lint",
     "cpd": "jscpd app src modules/tempoloop-media/src modules/tempoloop-media/android/src/main --config .jscpd.json --no-colors --no-tips",

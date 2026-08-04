@@ -368,9 +368,63 @@ describe('Android project list', () => {
       mockDeleteProject.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
     );
   });
+
+  it('keeps a project and allows delete retry when player cleanup fails once', async () => {
+    mockClearProjectPlaybackSource.mockRejectedValueOnce(
+      Object.assign(new Error('native source cleanup failed'), { code: 'E_AUDIO_LOAD_FAILED' }),
+    );
+    useProjectStore.setState({
+      projects: [IMPORTED_PROJECT],
+      mediaStatusByProjectId: { [IMPORTED_PROJECT.id]: { state: 'ready', issues: [] } },
+    });
+    const screen = await render(<ProjectListScreen />);
+
+    const confirmDelete = async () => {
+      await press(
+        screen.getByRole('button', {
+          name: COPY.projectList.projectMenuAccessibilityLabel(IMPORTED_PROJECT.name),
+        }),
+      );
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: COPY.common.delete })).toBeTruthy(),
+      );
+      await press(screen.getByRole('button', { name: COPY.common.delete }));
+      const alert = (Alert.alert as jest.MockedFunction<typeof Alert.alert>).mock.calls.at(-1);
+      const button = alert?.[2]?.find((candidate) => candidate.text === COPY.common.delete);
+      await act(async () => {
+        button?.onPress?.();
+        await Promise.resolve();
+      });
+    };
+
+    await confirmDelete();
+    await waitFor(() =>
+      expect(Alert.alert).toHaveBeenCalledWith(
+        COPY.projectList.actionErrorTitle,
+        COPY.projectList.actionErrorMessage,
+      ),
+    );
+    expect(mockDeleteProject).not.toHaveBeenCalled();
+
+    await confirmDelete();
+    await waitFor(() => expect(mockDeleteProject).toHaveBeenCalledWith(IMPORTED_PROJECT.id));
+    expect(mockClearProjectPlaybackSource).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('Android import flow', () => {
+  it('allows another selection when the existing project waveform is ready', async () => {
+    useProjectStore.setState({
+      projects: [IMPORTED_PROJECT],
+      mediaStatusByProjectId: { [IMPORTED_PROJECT.id]: { state: 'ready', issues: [] } },
+    });
+    const screen = await render(<ProjectListScreen />);
+
+    await press(screen.getByRole('button', { name: COPY.projectList.importAudio }));
+
+    await waitFor(() => expect(mockSelectAudio).toHaveBeenCalledTimes(1));
+  });
+
   it('shows separate video and audio import buttons and opens the requested source', async () => {
     const screen = await render(<ProjectListScreen />);
 

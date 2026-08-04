@@ -8,7 +8,7 @@ import { TempoLoopMediaServiceError } from '@/services/TempoLoopMediaService';
 
 const DEFAULT_LOAD_TIMEOUT_MS = 8_000;
 
-export type AudioLoadFailureStage = 'prepare' | 'replace' | 'native-status' | 'timeout';
+export type AudioLoadFailureStage = 'prepare' | 'replace' | 'native-status' | 'timeout' | 'cleanup';
 
 export interface AudioStatusSubscription {
   remove(): void;
@@ -94,9 +94,13 @@ export class ExpoAudioPartialValidator implements PartialAudioValidator {
     if (this.activeUri !== null) {
       throw validationError('prepare', 'Another audio source is already being validated.');
     }
+    if (this.attachedUri !== null) {
+      this.clearSourceInternal(this.attachedUri, true);
+    }
 
     const generation = ++this.validationGeneration;
     this.activeUri = audioUri;
+    let cleanupComplete = false;
 
     try {
       try {
@@ -166,14 +170,20 @@ export class ExpoAudioPartialValidator implements PartialAudioValidator {
           );
         }
       });
+      this.clearSourceInternal(audioUri, true);
+      cleanupComplete = true;
     } finally {
-      if (generation === this.validationGeneration) {
+      if (!cleanupComplete && (this.activeUri === audioUri || this.attachedUri === audioUri)) {
         this.clearSource(audioUri);
       }
     }
   }
 
   clearSource(audioUri?: string): void {
+    this.clearSourceInternal(audioUri, false);
+  }
+
+  private clearSourceInternal(audioUri: string | undefined, strict: boolean): void {
     const clearsActive =
       this.activeUri !== null && (audioUri === undefined || this.activeUri === audioUri);
     const clearsAttached =
@@ -189,14 +199,23 @@ export class ExpoAudioPartialValidator implements PartialAudioValidator {
     }
     this.validationGeneration += 1;
     if (clearsAttached && this.player !== null) {
-      // Clear the marker before touching native state so repeated finally /
-      // cancellation cleanup is idempotent even if native cleanup throws.
-      this.attachedUri = null;
       try {
         this.player.pause();
         this.player.replace(null);
-      } catch {
-        // Source clearing is best-effort; the generation still invalidates it.
+        // replace(null) is patched on Android to synchronously stop the
+        // Media3 player and clear its media items. AudioStatus cannot verify
+        // that cleanup: expo-audio intentionally reports STATE_ENDED as
+        // isLoaded=true, and the last emitted JS status may also remain
+        // visible after the media item has already been cleared.
+        this.attachedUri = null;
+      } catch (error) {
+        if (strict) {
+          throw validationError(
+            'cleanup',
+            'expo-audio could not release the exported audio after validation.',
+            error,
+          );
+        }
       }
     }
   }

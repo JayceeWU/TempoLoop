@@ -349,9 +349,9 @@ describe('PlaybackCoordinator', () => {
     await coordinator.togglePractice();
     const callCount = player.calls.length;
 
-    expect(coordinator.setRate(0.7)).toBe(true);
-    expect(player.calls.slice(callCount)).toEqual(['rate:0.7']);
-    expect(coordinator.getSnapshot()).toMatchObject({ status: 'playing', rate: 0.7 });
+    expect(coordinator.setRate(0.6)).toBe(true);
+    expect(player.calls.slice(callCount)).toEqual(['rate:0.6']);
+    expect(coordinator.getSnapshot()).toMatchObject({ status: 'playing', rate: 0.6 });
   });
 
   it('clears a retained source by its project id after route deactivation', async () => {
@@ -365,7 +365,7 @@ describe('PlaybackCoordinator', () => {
     expect(player.calls.at(-1)).toBe('replace:null');
   });
 
-  it('clears idle coordinator state without mutating the native player', () => {
+  it('clears idle coordinator state without sending replace(null) to an empty player', () => {
     const player = new FakePlayer();
     const coordinator = createCoordinator(player);
     const generation = coordinator.getSnapshot().commandGeneration;

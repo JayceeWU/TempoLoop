@@ -109,6 +109,9 @@ const PROJECT: DanceProject = {
     { id: 'segment-4', index: 3, startMs: null, endMs: null },
     { id: 'segment-5', index: 4, startMs: null, endMs: null },
     { id: 'segment-6', index: 5, startMs: null, endMs: null },
+    { id: 'segment-7', index: 6, startMs: null, endMs: null },
+    { id: 'segment-8', index: 7, startMs: null, endMs: null },
+    { id: 'segment-9', index: 8, startMs: null, endMs: null },
   ],
 };
 
@@ -350,6 +353,37 @@ describe('Android practice project screen', () => {
     expect(mockSnapshot.status).toBe('ready');
     expect(mockSnapshot.sourcePositionMs).toBe(4_000);
   });
+
+  it.each([
+    { status: 'ready' as const, buttonName: 'Play selected segment' },
+    { status: 'playing' as const, buttonName: 'Pause playback' },
+  ])(
+    'keeps the lead-in slider enabled while $status is being toggled',
+    async ({ status, buttonName }) => {
+      const screen = await renderPrepared();
+      await act(() => {
+        mockPatchSnapshot({ status });
+      });
+      mockPreparePracticeSegment.mockClear();
+      let resolvePreparation = (_prepared: boolean): void => undefined;
+      const pendingPreparation = new Promise<boolean>((resolve) => {
+        resolvePreparation = resolve;
+      });
+      mockPreparePracticeSegment.mockReturnValueOnce(pendingPreparation);
+
+      fireEvent.press(screen.getByRole('button', { name: buttonName }));
+      await waitFor(() => expect(mockPreparePracticeSegment).toHaveBeenCalledTimes(1));
+
+      expect(
+        screen.getByRole('adjustable', { name: 'Seconds before segment start' }),
+      ).toBeEnabled();
+
+      await act(async () => {
+        resolvePreparation(true);
+        await pendingPreparation;
+      });
+    },
+  );
 
   it('changes lead-in without interrupting playback and uses it on the next Pause', async () => {
     const screen = await renderPrepared();

@@ -144,6 +144,47 @@ describe('ExpoAudioPartialValidator', () => {
     expect(player.replace).toHaveBeenLastCalledWith(null);
   });
 
+  it('rejects a validated export when the shared player cannot release its source', async () => {
+    const player = createPlayer((source, emit) => {
+      if (source === null) {
+        throw new Error('Android bridge rejected a non-null AudioSource parameter');
+      }
+      emit(status({ isLoaded: true, duration: 90 }));
+    });
+    const validator = new ExpoAudioPartialValidator({ createPlayer: () => player });
+
+    await expect(
+      validator.validateLoadable('file:///private/audio.m4a.partial'),
+    ).rejects.toMatchObject({
+      code: 'E_AUDIO_LOAD_FAILED',
+      loadFailureStage: 'cleanup',
+    });
+    expect(player.replace).toHaveBeenCalledWith(null);
+  });
+
+  it('does not mistake a stale loaded status for a failed native cleanup', async () => {
+    const player = createPlayer((source, emit) => {
+      if (source !== null) {
+        emit(status({ isLoaded: true, duration: 90 }));
+      }
+    });
+    Object.defineProperty(player, 'currentStatus', {
+      configurable: true,
+      value: status({ playbackState: 'ready', isLoaded: true, duration: 90 }),
+    });
+    const validator = new ExpoAudioPartialValidator({ createPlayer: () => player });
+
+    await expect(
+      validator.validateLoadable('file:///private/audio-one.m4a.partial'),
+    ).resolves.toBeUndefined();
+    await expect(
+      validator.validateLoadable('file:///private/audio-two.m4a.partial'),
+    ).resolves.toBeUndefined();
+
+    expect(player.replace).toHaveBeenNthCalledWith(2, null);
+    expect(player.replace).toHaveBeenNthCalledWith(4, null);
+  });
+
   it('maps shared-player preparation failures to the stable media error code', async () => {
     const unregisterPreparation = registerImportPlaybackPreparation(() => {
       throw new Error('native player rejected redundant source clearing');

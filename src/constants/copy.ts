@@ -36,9 +36,9 @@ export const COPY = {
     actionErrorMessage:
       'TempoLoop could not save that change. Your existing project data is unchanged.',
     projectSummary: (duration: string, configuredCount: number) =>
-      `${duration} \u00b7 ${configuredCount} of 6 segments`,
+      `${duration} \u00b7 ${configuredCount} of 9 segments`,
     projectAccessibilitySummary: (duration: string, configuredCount: number) =>
-      `${duration}, ${configuredCount} of 6 segments configured`,
+      `${duration}, ${configuredCount} of 9 segments configured`,
     updated: (date: string) => `Updated ${date}`,
     updatedUnknown: 'Unknown date',
     waveformStatus: {

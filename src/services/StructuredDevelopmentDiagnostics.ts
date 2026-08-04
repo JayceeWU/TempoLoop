@@ -118,7 +118,8 @@ function safeAudioLoadFailureStage(error: unknown): AudioLoadFailureStage | null
     (error.loadFailureStage === 'prepare' ||
       error.loadFailureStage === 'replace' ||
       error.loadFailureStage === 'native-status' ||
-      error.loadFailureStage === 'timeout')
+      error.loadFailureStage === 'timeout' ||
+      error.loadFailureStage === 'cleanup')
   ) {
     return error.loadFailureStage;
   }

@@ -8,7 +8,7 @@ import {
 import { createEmptySegments } from '@/domain/segment';
 
 describe('segment editor draft', () => {
-  it('deep copies all six saved rows without retaining segment references', () => {
+  it('deep copies all nine saved rows without retaining segment references', () => {
     const saved = createEmptySegments();
     const draft = createSegmentDraft(saved);
 

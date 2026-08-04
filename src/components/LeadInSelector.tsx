@@ -1,4 +1,5 @@
 import NativeSlider from '@expo/ui/community/slider';
+import { memo, useCallback } from 'react';
 import { type AccessibilityActionEvent, StyleSheet, Text, View } from 'react-native';
 
 import { COPY } from '@/constants/copy';
@@ -23,25 +24,36 @@ export function snapLeadInSeconds(value: number): LeadInMs {
   return LEAD_IN_OPTIONS_MS[index] ?? 0;
 }
 
-export function LeadInSelector({
+function LeadInSelectorComponent({
   selectedLeadInMs,
   disabled = false,
   onSelectLeadIn,
 }: LeadInSelectorProps) {
   const selectedSeconds = selectedLeadInMs / 1_000;
 
-  const select = (leadInMs: LeadInMs) => {
-    if (!disabled && leadInMs !== selectedLeadInMs) {
-      onSelectLeadIn(leadInMs);
-    }
-  };
+  const select = useCallback(
+    (leadInMs: LeadInMs) => {
+      if (!disabled && leadInMs !== selectedLeadInMs) {
+        onSelectLeadIn(leadInMs);
+      }
+    },
+    [disabled, onSelectLeadIn, selectedLeadInMs],
+  );
 
-  const handleAccessibilityAction = (event: AccessibilityActionEvent) => {
-    const currentIndex = optionIndex(selectedLeadInMs);
-    const offset = event.nativeEvent.actionName === 'increment' ? 1 : -1;
-    const nextIndex = Math.min(LEAD_IN_OPTIONS_MS.length - 1, Math.max(0, currentIndex + offset));
-    select(LEAD_IN_OPTIONS_MS[nextIndex] ?? selectedLeadInMs);
-  };
+  const handleAccessibilityAction = useCallback(
+    (event: AccessibilityActionEvent) => {
+      const currentIndex = optionIndex(selectedLeadInMs);
+      const offset = event.nativeEvent.actionName === 'increment' ? 1 : -1;
+      const nextIndex = Math.min(LEAD_IN_OPTIONS_MS.length - 1, Math.max(0, currentIndex + offset));
+      select(LEAD_IN_OPTIONS_MS[nextIndex] ?? selectedLeadInMs);
+    },
+    [select, selectedLeadInMs],
+  );
+
+  const handleValueChange = useCallback(
+    (value: number) => select(snapLeadInSeconds(value)),
+    [select],
+  );
 
   return (
     <View
@@ -65,7 +77,7 @@ export function LeadInSelector({
         maximumValue={6}
         minimumTrackTintColor={colors.accent}
         minimumValue={0}
-        onValueChange={(value) => select(snapLeadInSeconds(value))}
+        onValueChange={handleValueChange}
         step={2}
         style={styles.slider}
         thumbTintColor={colors.accent}
@@ -88,6 +100,9 @@ export function LeadInSelector({
     </View>
   );
 }
+
+export const LeadInSelector = memo(LeadInSelectorComponent);
+LeadInSelector.displayName = 'LeadInSelector';
 
 const styles = StyleSheet.create({
   container: {

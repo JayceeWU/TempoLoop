@@ -83,6 +83,23 @@ const expoAudioModulePath = path.join(
 const expoAudioModuleSource = fs.existsSync(expoAudioModulePath)
   ? fs.readFileSync(expoAudioModulePath, 'utf8')
   : '';
+const expoAudioPackagePath = path.join(repositoryRoot, 'node_modules/expo-audio/package.json');
+const installedExpoAudioVersion = fs.existsSync(expoAudioPackagePath)
+  ? JSON.parse(fs.readFileSync(expoAudioPackagePath, 'utf8')).version
+  : null;
+if (installedExpoAudioVersion !== '57.0.3') {
+  violations.push('expo-audio: installed version is not the patched 57.0.3 baseline');
+}
+if (
+  !expoAudioModuleSource.includes(
+    'Function("replace") { player: AudioPlayer, source: AudioSource? ->',
+  ) ||
+  expoAudioModuleSource.includes(
+    'Function("replace") { player: AudioPlayer, source: AudioSource ->',
+  )
+) {
+  violations.push('expo-audio: Android replace(null) bridge parameter is not nullable');
+}
 if (
   !expoAudioModuleSource.includes('// AudioSource explicitly includes null.') ||
   !expoAudioModuleSource.includes('player.ref.stop()') ||

@@ -6,7 +6,7 @@ import easConfig from '../eas.json';
 describe('TempoLoop app configuration', () => {
   it('is an offline, Android-only application', () => {
     expect(config.name).toBe('TempoLoop');
-    expect(config.owner).toBe('jwu453');
+    expect(config.owner).toBe('jaycee.ucsc');
     expect(config.slug).toBe('tempoloop');
     expect(config.scheme).toBe('tempoloop');
     expect(config.version).toBe('1.0.0');
@@ -16,7 +16,7 @@ describe('TempoLoop app configuration', () => {
     expect(config.icon).toBe('./assets/images/tempoloop-icon-purple.png');
     expect(config.updates?.enabled).toBe(false);
     expect(config.extra?.eas).toEqual({
-      projectId: 'b2ba5951-4f59-4fdf-83a4-ad1798b8e452',
+      projectId: 'f15bd21b-a9d8-4625-8fed-bddd75d658d9',
     });
     expect(config.ios).toBeUndefined();
     expect(config.android).toEqual(

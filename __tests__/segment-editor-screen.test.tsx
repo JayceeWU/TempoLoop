@@ -135,6 +135,9 @@ const PROJECT: DanceProject = {
     { id: 'segment-4', index: 3, startMs: null, endMs: null },
     { id: 'segment-5', index: 4, startMs: null, endMs: null },
     { id: 'segment-6', index: 5, startMs: null, endMs: null },
+    { id: 'segment-7', index: 6, startMs: null, endMs: null },
+    { id: 'segment-8', index: 7, startMs: null, endMs: null },
+    { id: 'segment-9', index: 8, startMs: null, endMs: null },
   ],
 };
 
@@ -201,7 +204,7 @@ async function renderPreparedEditor() {
 
   await waitFor(() => {
     expect(screen.getByText('Test Waveform')).toBeTruthy();
-    expect(screen.getByLabelText('Segment 6')).toBeTruthy();
+    expect(screen.getByLabelText('Segment 9')).toBeTruthy();
     expect(mockEnterEditor).toHaveBeenCalledWith({
       projectId: PROJECT.id,
       audioUri: 'file:///documents/TempoLoop/projects/project-1/audio.m4a',
@@ -282,7 +285,7 @@ describe('segment editor screen', () => {
     expect(waveformLoader.load).not.toHaveBeenCalled();
   });
 
-  it('keeps the compact audio panel outside the segment scroller and renders six rows', async () => {
+  it('keeps the compact audio panel outside the segment scroller and renders nine rows', async () => {
     const screen = await renderPreparedEditor();
 
     expect(screen.getByText('00:04 / 01:30')).toBeTruthy();
@@ -293,7 +296,7 @@ describe('segment editor screen', () => {
         'segment-editor-audio-panel',
       ),
     ).toBeNull();
-    for (let segment = 1; segment <= 6; segment += 1) {
+    for (let segment = 1; segment <= 9; segment += 1) {
       expect(screen.getByLabelText(`Segment ${segment}`)).toBeTruthy();
     }
     expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();

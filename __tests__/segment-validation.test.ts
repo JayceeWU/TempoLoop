@@ -14,7 +14,7 @@ import {
 } from '@/domain/validation';
 
 describe('segment validation', () => {
-  it('creates exactly six independently allocated unset segments with fixed IDs and indexes', () => {
+  it('creates exactly nine independently allocated unset segments with fixed IDs and indexes', () => {
     const first = createEmptySegments();
     const second = createEmptySegments();
 
@@ -25,8 +25,11 @@ describe('segment validation', () => {
       { id: 'segment-4', index: 3, startMs: null, endMs: null },
       { id: 'segment-5', index: 4, startMs: null, endMs: null },
       { id: 'segment-6', index: 5, startMs: null, endMs: null },
+      { id: 'segment-7', index: 6, startMs: null, endMs: null },
+      { id: 'segment-8', index: 7, startMs: null, endMs: null },
+      { id: 'segment-9', index: 8, startMs: null, endMs: null },
     ]);
-    expect(first).toHaveLength(6);
+    expect(first).toHaveLength(9);
     expect(first[0]).not.toBe(second[0]);
   });
 
@@ -59,7 +62,7 @@ describe('segment validation', () => {
     expect(DanceSegmentsSchema.safeParse(segments).success).toBe(true);
   });
 
-  it('requires the strict six-item ID and index order at runtime', () => {
+  it('requires nine ordered rows and upgrades legacy six-row projects', () => {
     const segments = createEmptySegments();
     const wrongOrder = [...segments];
     [wrongOrder[0], wrongOrder[1]] = [wrongOrder[1]!, wrongOrder[0]!];
@@ -68,6 +71,8 @@ describe('segment validation', () => {
 
     expect(DanceSegmentsSchema.safeParse(segments).success).toBe(true);
     expect(DanceSegmentsSchema.safeParse(segments.slice(0, 5)).success).toBe(false);
+    expect(DanceSegmentsSchema.parse(segments.slice(0, 6))).toEqual(segments);
+    expect(DanceSegmentsSchema.safeParse(segments.slice(0, 7)).success).toBe(false);
     expect(DanceSegmentsSchema.safeParse(wrongOrder).success).toBe(false);
     expect(DanceSegmentsSchema.safeParse(mismatchedIdentity).success).toBe(false);
   });
@@ -123,6 +128,7 @@ describe('segment validation', () => {
     expect(legacyWaveformStatus.waveformStatus).toBe('ready');
     expect(DanceProjectSchema.safeParse({ ...project, preferredRate: 0.8 }).success).toBe(false);
     expect(DanceProjectSchema.safeParse({ ...project, selectedRate: 0.75 }).success).toBe(false);
+    expect(PlaybackRateSchema.safeParse(0.6).success).toBe(true);
     expect(PlaybackRateSchema.safeParse(0.7).success).toBe(true);
     expect(PlaybackRateSchema.safeParse(0.75).success).toBe(false);
   });

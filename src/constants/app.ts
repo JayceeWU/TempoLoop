@@ -15,7 +15,7 @@ export const WAVEFORM_FILE_NAME = 'waveform.json' as const;
 
 export const PROJECT_SCHEMA_VERSION = 1 as const;
 export const WAVEFORM_SCHEMA_VERSION = 1 as const;
-export const SEGMENT_COUNT = 6 as const;
+export const SEGMENT_COUNT = 9 as const;
 export const WAVEFORM_POINT_COUNT = 2_048 as const;
 export const DEFAULT_LEAD_IN_MS = 6_000 as const;
 

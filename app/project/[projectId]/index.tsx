@@ -532,9 +532,7 @@ export default function PracticeProjectScreen() {
           {COPY.practice.leadInHeading} · {COPY.practice.leadInValue(selectedLeadInMs / 1_000)}
         </Text>
         <LeadInSelector
-          disabled={
-            !playerOwnsProject || isEntering || isPreparingSegment || isToggling || isOpeningEditor
-          }
+          disabled={!playerOwnsProject || isEntering || isPreparingSegment || isOpeningEditor}
           onSelectLeadIn={handleSelectLeadIn}
           selectedLeadInMs={selectedLeadInMs}
         />

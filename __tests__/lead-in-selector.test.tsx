@@ -2,7 +2,26 @@ import { fireEvent, render } from '@testing-library/react-native';
 
 import { LeadInSelector, snapLeadInSeconds } from '@/components/LeadInSelector';
 
+const mockNativeSliderRender = jest.fn();
+
+jest.mock('@expo/ui/community/slider', () => {
+  const ReactModule = jest.requireActual<typeof import('react')>('react');
+  const { View } = jest.requireActual<typeof import('react-native')>('react-native');
+
+  return {
+    __esModule: true,
+    default: (props: Record<string, unknown>) => {
+      mockNativeSliderRender(props);
+      return ReactModule.createElement(View, props);
+    },
+  };
+});
+
 describe('LeadInSelector', () => {
+  beforeEach(() => {
+    mockNativeSliderRender.mockClear();
+  });
+
   it.each([
     [-1, 0],
     [0, 0],
@@ -41,5 +60,24 @@ describe('LeadInSelector', () => {
       nativeEvent: { actionName: 'increment' },
     });
     expect(onSelectLeadIn).toHaveBeenCalledWith(6_000);
+  });
+
+  it('does not re-render the native slider when its parent passes unchanged props', async () => {
+    const onSelectLeadIn = jest.fn();
+    const screen = await render(
+      <LeadInSelector onSelectLeadIn={onSelectLeadIn} selectedLeadInMs={4_000} />,
+    );
+    const initialRenderCount = mockNativeSliderRender.mock.calls.length;
+
+    await screen.rerender(
+      <LeadInSelector onSelectLeadIn={onSelectLeadIn} selectedLeadInMs={4_000} />,
+    );
+
+    expect(mockNativeSliderRender).toHaveBeenCalledTimes(initialRenderCount);
+
+    await screen.rerender(
+      <LeadInSelector onSelectLeadIn={onSelectLeadIn} selectedLeadInMs={2_000} />,
+    );
+    expect(mockNativeSliderRender).toHaveBeenCalledTimes(initialRenderCount + 1);
   });
 });
