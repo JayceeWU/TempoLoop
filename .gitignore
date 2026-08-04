@@ -1,5 +1,4 @@
 # Local environment
-.agent/
 .env
 .env.*
 !.env.example
