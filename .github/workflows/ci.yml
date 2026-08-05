@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Quality checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Check duplicate code
+        run: npm run cpd
+
+      - name: Upload duplicate-code report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: copypaste-report
+          path: copypaste/
+          if-no-files-found: ignore
+
+      - name: Test
+        run: npm test
+
+      - name: Check formatting
+        run: npm run format
+
+      - name: Expo Doctor
+        run: npm run doctor
+
+      - name: Audit prohibited implementations
+        run: npm run audit
+
+  android-native:
+    name: Android native checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Android project
+        run: npx expo prebuild --platform android --no-install --clean
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x android/gradlew
+
+      - name: Run Kotlin unit tests
+        working-directory: android
+        run: ./gradlew :tempoloop-media:testDebugUnitTest --stacktrace --no-daemon
+
+      - name: Verify Media3 versions
+        working-directory: android
+        run: ./gradlew :tempoloop-media:verifyMedia3Versions --stacktrace --no-daemon
+
+      - name: Assemble debug APK
+        working-directory: android
+        run: ./gradlew :app:assembleDebug --stacktrace --no-daemon
+
+      - name: Compile Android instrumentation tests
+        working-directory: android
+        run: ./gradlew :tempoloop-media:assembleDebugAndroidTest --stacktrace --no-daemon

@@ -1,0 +1,213 @@
+import org.gradle.api.artifacts.component.ModuleComponentIdentifier
+import org.gradle.api.artifacts.component.ModuleComponentSelector
+
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'expo.modules.tempoloopmedia'
+version = '1.0.0'
+
+// expo-audio and TempoLoopMedia share the application's Media3 graph. Read the
+// installed expo-audio declaration so the Transformer dependency cannot drift
+// to an independently hard-coded version.
+def expoAudioGradleCandidates = [
+  new File(rootProject.projectDir, '../node_modules/expo-audio/android/build.gradle'),
+  new File(projectDir, '../../../node_modules/expo-audio/android/build.gradle'),
+].collect { it.canonicalFile }.unique()
+def expoAudioGradleFile = expoAudioGradleCandidates.find { it.isFile() }
+
+if (expoAudioGradleFile == null) {
+  throw new GradleException(
+    "TempoLoopMedia could not find the installed expo-audio Android build file. " +
+      "Run npm ci before the Android build. Checked: " +
+      expoAudioGradleCandidates.join(', ')
+  )
+}
+
+def expoAudioBuildScript = expoAudioGradleFile.getText('UTF-8')
+def expoAudioVersionMatcher = expoAudioBuildScript =~
+  /(?m)^\s*(?:def\s+)?androidxMedia3Version\s*=\s*["']([^"']+)["']\s*$/
+def expoAudioMedia3Versions = []
+while (expoAudioVersionMatcher.find()) {
+  expoAudioMedia3Versions.add(expoAudioVersionMatcher.group(1).trim())
+}
+expoAudioMedia3Versions = expoAudioMedia3Versions.unique()
+
+if (expoAudioMedia3Versions.size() != 1 || expoAudioMedia3Versions.first().isEmpty()) {
+  throw new GradleException(
+    "TempoLoopMedia expected exactly one literal androidxMedia3Version in " +
+      "${expoAudioGradleFile}, but found ${expoAudioMedia3Versions ?: 'none'}."
+  )
+}
+
+def expoAudioMedia3Version = expoAudioMedia3Versions.first()
+
+android {
+  namespace 'expo.modules.tempoloopmedia'
+
+  defaultConfig {
+    versionCode 1
+    versionName '1.0.0'
+    testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+  }
+
+  testOptions {
+    unitTests.returnDefaultValues = true
+  }
+}
+
+repositories {
+  google()
+  mavenCentral()
+}
+
+dependencies {
+  implementation "androidx.media3:media3-transformer:${expoAudioMedia3Version}"
+
+  testImplementation 'junit:junit:4.13.2'
+
+  // Keep instrumentation support aligned with the AndroidX Test versions
+  // already used by the installed Expo SDK 57 packages.
+  androidTestImplementation 'junit:junit:4.13.2'
+  androidTestImplementation 'androidx.test:core:1.7.0'
+  androidTestImplementation 'androidx.test.ext:junit:1.3.0'
+  androidTestImplementation 'androidx.test:runner:1.7.0'
+}
+
+def registerMedia3GraphVerifier = { candidateProject, verifierTaskName ->
+  candidateProject.tasks.register(verifierTaskName) {
+    group = 'verification'
+    description =
+      "Verifies Media3 alignment for ${candidateProject.path} compile/runtime classpaths."
+
+    doLast {
+      def expectedVersion = expoAudioMedia3Version
+      def checkedConfigurations = []
+      def resolvedMedia3 = []
+      def requestedMedia3 = []
+
+      candidateProject.configurations.findAll { configuration ->
+        if (!configuration.canBeResolved) {
+          return false
+        }
+        def name = configuration.name.toLowerCase()
+        return !name.contains('androidtest') &&
+          (name.endsWith('compileclasspath') || name.endsWith('runtimeclasspath'))
+      }.sort { it.name }.each { configuration ->
+        def configurationLabel = "${candidateProject.path}:${configuration.name}"
+        def result
+        try {
+          result = configuration.incoming.resolutionResult
+          // Force traversal now so resolution failures are attributed to this gate.
+          result.allComponents.size()
+        } catch (Exception error) {
+          throw new GradleException(
+            "TempoLoopMedia could not resolve ${configurationLabel} while checking Media3 versions.",
+            error
+          )
+        }
+
+        checkedConfigurations.add(configurationLabel)
+
+        result.allComponents.each { component ->
+          if (component.id instanceof ModuleComponentIdentifier &&
+            component.id.group == 'androidx.media3') {
+            resolvedMedia3.add([
+              module: component.id.module,
+              version: component.id.version,
+              configuration: configurationLabel,
+            ])
+          }
+        }
+
+        result.allDependencies.each { dependency ->
+          if (dependency.requested instanceof ModuleComponentSelector &&
+            dependency.requested.group == 'androidx.media3') {
+            requestedMedia3.add([
+              module: dependency.requested.module,
+              version: dependency.requested.version,
+              configuration: configurationLabel,
+            ])
+          }
+        }
+      }
+
+      if (checkedConfigurations.isEmpty()) {
+        throw new GradleException(
+          "TempoLoopMedia did not find an Android compile/runtime classpath to verify for " +
+            "${candidateProject.path}."
+        )
+      }
+
+      if (resolvedMedia3.isEmpty()) {
+        throw new GradleException(
+          "TempoLoopMedia found no resolved androidx.media3 components in: " +
+            checkedConfigurations.join(', ')
+        )
+      }
+
+      def resolvedVersions = resolvedMedia3.collect { it.version }.findAll { it }.unique().sort()
+      def requestedVersions = requestedMedia3.collect { it.version }.findAll { it }.unique().sort()
+      def invalidResolvedVersions = resolvedVersions.findAll { it != expectedVersion }
+      def invalidRequestedVersions = requestedVersions.findAll { it != expectedVersion }
+
+      if (resolvedVersions.size() != 1 || !invalidResolvedVersions.isEmpty() ||
+        !invalidRequestedVersions.isEmpty()) {
+        def resolvedSummary = resolvedMedia3
+          .collect { "${it.module}:${it.version} (${it.configuration})" }
+          .unique()
+          .sort()
+          .join('\n  - ')
+        def requestedSummary = requestedMedia3
+          .collect { "${it.module}:${it.version} (${it.configuration})" }
+          .unique()
+          .sort()
+          .join('\n  - ')
+
+        throw new GradleException(
+          "Media3 version alignment failed. expo-audio declares ${expectedVersion}; " +
+            "resolved versions=${resolvedVersions}; requested versions=${requestedVersions}.\n" +
+            "Resolved components:\n  - ${resolvedSummary}\n" +
+            "Requested components:\n  - ${requestedSummary}"
+        )
+      }
+
+      logger.lifecycle(
+        "TempoLoop Media3 alignment verified for ${candidateProject.path}: " +
+          "${expectedVersion} across " +
+          "${checkedConfigurations.size()} Android compile/runtime classpath(s)."
+      )
+    }
+  }
+}
+
+// Gradle 9 forbids a task action from resolving configurations owned by a
+// different project. Each verifier therefore belongs to the project whose
+// dependency graph it resolves; this module task only aggregates their result.
+def verifyMedia3VersionsTask = tasks.register('verifyMedia3Versions') {
+  group = 'verification'
+  description =
+    'Fails when Android compile/runtime classpaths resolve Media3 versions that differ from expo-audio.'
+}
+
+def moduleMedia3Verifier = registerMedia3GraphVerifier(
+  project,
+  'verifyTempoLoopMedia3ModuleVersions'
+)
+verifyMedia3VersionsTask.configure {
+  dependsOn(moduleMedia3Verifier)
+}
+
+rootProject.allprojects { candidateProject ->
+  candidateProject.pluginManager.withPlugin('com.android.application') {
+    def applicationMedia3Verifier = registerMedia3GraphVerifier(
+      candidateProject,
+      'verifyTempoLoopMedia3ApplicationVersions'
+    )
+    verifyMedia3VersionsTask.configure {
+      dependsOn(applicationMedia3Verifier)
+    }
+  }
+}
