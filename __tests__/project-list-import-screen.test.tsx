@@ -258,14 +258,15 @@ afterEach(async () => {
 });
 
 describe('Android project list', () => {
-  it('shows the updated date and opens ready projects', async () => {
+  it('hides ready waveform and updated-time rows while opening ready projects', async () => {
     useProjectStore.setState({
       projects: [IMPORTED_PROJECT],
       mediaStatusByProjectId: { [IMPORTED_PROJECT.id]: { state: 'ready', issues: [] } },
     });
     const screen = await render(<ProjectListScreen />);
 
-    expect(screen.getByText(COPY.projectList.updated('Jul 31, 2026'))).toBeTruthy();
+    expect(screen.queryByText('Waveform ready')).toBeNull();
+    expect(screen.queryByText(COPY.projectList.updated('Jul 31, 2026'))).toBeNull();
     await press(
       screen.getByRole('button', {
         name: new RegExp(`^${IMPORTED_PROJECT.name}\\.`),

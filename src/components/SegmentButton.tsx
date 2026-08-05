@@ -1,3 +1,4 @@
+import { memo, useCallback } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { COPY } from '@/constants/copy';
@@ -11,63 +12,120 @@ export interface SegmentButtonProps {
   readonly durationMs: number;
   readonly selected: boolean;
   readonly interactionDisabled?: boolean;
-  readonly onPress: () => void;
+  readonly onSelectSegment: (segmentIndex: DanceSegment['index']) => void;
 }
 
-export function SegmentButton({
+function SegmentButtonComponent({
   segment,
   durationMs,
   selected,
   interactionDisabled = false,
-  onPress,
+  onSelectSegment,
 }: SegmentButtonProps) {
   const configured = isPracticeSegmentConfigured(segment, durationMs);
   const disabled = !configured || interactionDisabled;
+  const selectedAndEnabled = selected && configured && !interactionDisabled;
   const displayNumber = segmentDisplayNumber(segment.index);
   const accessibilityLabel = COPY.practice.segmentLabel(displayNumber);
-  const range = configured
-    ? `${formatSegmentTime(segment.startMs)} \u2013 ${formatSegmentTime(segment.endMs)}`
-    : '--:-- \u2013 --:--';
+  const startTime = formatSegmentTime(segment.startMs);
+  const endTime = formatSegmentTime(segment.endMs);
+  const handlePress = useCallback(
+    () => onSelectSegment(segment.index),
+    [onSelectSegment, segment.index],
+  );
 
   return (
     <Pressable
       accessibilityHint={configured ? undefined : COPY.practice.segmentUnavailableHint}
-      accessibilityLabel={`${accessibilityLabel}, ${range}`}
+      accessibilityLabel={`${accessibilityLabel}, ${startTime} to ${endTime}`}
       accessibilityRole="button"
       accessibilityState={{ disabled, selected }}
       disabled={disabled}
-      onPress={onPress}
+      onPress={handlePress}
       style={({ pressed }) => [
         styles.button,
-        selected && configured && styles.selectedButton,
-        !configured && styles.unconfiguredButton,
+        selectedAndEnabled && styles.selectedButton,
+        disabled && styles.unconfiguredButton,
         pressed && !disabled && styles.pressedButton,
-        interactionDisabled && configured && styles.busyButton,
       ]}
     >
       <View style={styles.content}>
-        <Text
+        <View style={styles.numberArea}>
+          <Text
+            style={[
+              styles.number,
+              selectedAndEnabled && styles.selectedText,
+              disabled && styles.unconfiguredText,
+            ]}
+          >
+            {displayNumber}
+          </Text>
+        </View>
+        <View
           style={[
-            styles.label,
-            selected && configured && styles.selectedLabel,
-            !configured && styles.unconfiguredLabel,
+            styles.numberDivider,
+            selectedAndEnabled && styles.selectedNumberDivider,
+            disabled && styles.unconfiguredNumberDivider,
           ]}
-        >
-          {displayNumber}
-        </Text>
-        <Text
-          style={[
-            styles.range,
-            selected && configured && styles.selectedRange,
-            !configured && styles.unconfiguredLabel,
-          ]}
-        >
-          {range}
-        </Text>
+          testID={`segment-${displayNumber}-number-divider`}
+        />
+        <View style={styles.times}>
+          <View style={styles.timeRow}>
+            <Text
+              style={[
+                styles.time,
+                selectedAndEnabled && styles.selectedText,
+                disabled && styles.unconfiguredText,
+              ]}
+            >
+              {startTime}
+            </Text>
+          </View>
+          <Text
+            accessible={false}
+            style={[
+              styles.timeSeparator,
+              selectedAndEnabled && styles.selectedTimeSeparator,
+              disabled && styles.unconfiguredTimeSeparator,
+            ]}
+            testID={`segment-${displayNumber}-time-separator`}
+          >
+            {'\u00b7'}
+          </Text>
+          <View style={styles.timeRow}>
+            <Text
+              style={[
+                styles.time,
+                selectedAndEnabled && styles.selectedText,
+                disabled && styles.unconfiguredText,
+              ]}
+            >
+              {endTime}
+            </Text>
+          </View>
+        </View>
       </View>
     </Pressable>
   );
 }
+
+function areSegmentButtonPropsEqual(
+  previous: SegmentButtonProps,
+  next: SegmentButtonProps,
+): boolean {
+  return (
+    previous.segment.id === next.segment.id &&
+    previous.segment.index === next.segment.index &&
+    previous.segment.startMs === next.segment.startMs &&
+    previous.segment.endMs === next.segment.endMs &&
+    previous.durationMs === next.durationMs &&
+    previous.selected === next.selected &&
+    (previous.interactionDisabled ?? false) === (next.interactionDisabled ?? false) &&
+    previous.onSelectSegment === next.onSelectSegment
+  );
+}
+
+export const SegmentButton = memo(SegmentButtonComponent, areSegmentButtonPropsEqual);
 
 const styles = StyleSheet.create({
   button: {
@@ -78,8 +136,9 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     minHeight: 76,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
+    minWidth: 0,
+    paddingHorizontal: spacing.xs,
+    paddingVertical: 0,
   },
   selectedButton: {
     backgroundColor: colors.accent,
@@ -92,31 +151,71 @@ const styles = StyleSheet.create({
   pressedButton: {
     backgroundColor: colors.surfacePressed,
   },
-  busyButton: {
-    opacity: 0.65,
-  },
   content: {
     alignItems: 'center',
+    alignSelf: 'stretch',
+    flex: 1,
+    flexDirection: 'row',
+    gap: spacing.xxs,
   },
-  label: {
+  numberArea: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 20,
+  },
+  numberDivider: {
+    alignSelf: 'stretch',
+    backgroundColor: colors.border,
+    opacity: 0.35,
+    width: 1,
+  },
+  selectedNumberDivider: {
+    backgroundColor: colors.textOnAccent,
+  },
+  unconfiguredNumberDivider: {
+    backgroundColor: colors.disabledText,
+  },
+  number: {
     color: colors.text,
-    fontSize: fontSizes.body,
+    fontSize: fontSizes.caption,
     fontWeight: fontWeights.semibold,
     textAlign: 'center',
   },
-  selectedLabel: {
-    color: colors.textOnAccent,
+  times: {
+    alignItems: 'center',
+    alignSelf: 'stretch',
+    flex: 1,
+    gap: spacing.xxs,
+    justifyContent: 'center',
+    minWidth: 0,
   },
-  range: {
+  timeRow: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '100%',
+  },
+  time: {
     color: colors.textMuted,
-    fontSize: fontSizes.caption,
-    marginTop: spacing.xxs,
+    fontSize: fontSizes.body,
+    lineHeight: 20,
     textAlign: 'center',
   },
-  selectedRange: {
+  timeSeparator: {
+    color: colors.border,
+    fontSize: fontSizes.body,
+    lineHeight: 12,
+    textAlign: 'center',
+  },
+  selectedTimeSeparator: {
     color: colors.textOnAccent,
   },
-  unconfiguredLabel: {
+  unconfiguredTimeSeparator: {
+    color: colors.disabledText,
+  },
+  selectedText: {
+    color: colors.textOnAccent,
+  },
+  unconfiguredText: {
     color: colors.disabledText,
   },
 });

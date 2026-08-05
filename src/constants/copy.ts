@@ -120,9 +120,9 @@ export const COPY = {
   practice: {
     backAccessibilityLabel: 'Back to projects',
     settingsAccessibilityLabel: 'Edit segment times',
-    speedHeading: 'Playback speed',
-    speedAccessibilityLabel: (rateLabel: string) => `${rateLabel} playback speed`,
-    leadInHeading: 'Start before segment',
+    speedHeading: 'Speed',
+    speedAccessibilityLabel: (rateLabel: string) => `${rateLabel} speed`,
+    leadInHeading: 'Start before',
     leadInValue: (seconds: number) => `${seconds} ${seconds === 1 ? 'second' : 'seconds'}`,
     leadInAccessibilityLabel: 'Seconds before segment start',
     segmentsHeading: 'Practice segments',
@@ -135,9 +135,6 @@ export const COPY = {
     loadingAudio: 'Preparing audio...',
     audioUnavailable: 'The project audio is not ready. Try loading it again.',
     retryAudio: 'Try Again',
-    noConfiguredSegments: 'Set at least one segment to begin practicing.',
-    rangeSummary: (start: string, end: string, current: string) =>
-      `${start} \u2013 ${end} \u00b7 Current ${current}`,
     projectNotFoundTitle: 'Project not found',
     projectNotFoundMessage: 'TempoLoop could not find this project in the local library.',
     playbackErrorTitle: 'Audio could not be played',

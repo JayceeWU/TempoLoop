@@ -204,6 +204,16 @@ async function renderPrepared(project: DanceProject = PROJECT) {
   return screen;
 }
 
+function expectConfiguredPracticeChoicesEnabled(
+  screen: Awaited<ReturnType<typeof renderPrepared>>,
+): void {
+  for (const speedButton of screen.getAllByRole('radio')) {
+    expect(speedButton).toBeEnabled();
+  }
+  expect(screen.getByRole('button', { name: /Segment 1/ })).toBeEnabled();
+  expect(screen.getByRole('button', { name: /Segment 2/ })).toBeEnabled();
+}
+
 beforeEach(() => {
   jest.clearAllMocks();
   mockSnapshotListeners.clear();
@@ -263,13 +273,22 @@ describe('Android practice project screen', () => {
   it('places the lead-in slider between speed and segment selection', async () => {
     const screen = await renderPrepared();
     const rendered = JSON.stringify(screen.toJSON());
-    const speedIndex = rendered.indexOf('Playback speed');
-    const leadInIndex = rendered.indexOf('Start before segment');
+    const speedIndex = rendered.indexOf('Speed');
+    const leadInIndex = rendered.indexOf('Start before');
     const segmentsIndex = rendered.indexOf('Practice segments');
 
     expect(speedIndex).toBeGreaterThanOrEqual(0);
     expect(leadInIndex).toBeGreaterThan(speedIndex);
     expect(segmentsIndex).toBeGreaterThan(leadInIndex);
+    expect(screen.getByText('Start before')).toHaveStyle({ marginTop: 24 });
+    expect(screen.getByText('Practice segments')).toHaveStyle({ marginTop: 24 });
+  });
+
+  it('does not show a range or current-position summary below the segment grid', async () => {
+    const screen = await renderPrepared();
+
+    expect(screen.queryByText(/Current /)).toBeNull();
+    expect(screen.queryByText('Set at least one segment to begin practicing.')).toBeNull();
   });
 
   it('keeps Play disabled when no segment is configured', async () => {
@@ -286,7 +305,7 @@ describe('Android practice project screen', () => {
     await waitFor(() => expect(mockEnterPractice).toHaveBeenCalled());
 
     expect(mockPreparePracticeSegment).not.toHaveBeenCalled();
-    expect(screen.getByText('Set at least one segment to begin practicing.')).toBeTruthy();
+    expect(screen.queryByText('Set at least one segment to begin practicing.')).toBeNull();
     expect(screen.getByRole('button', { name: 'Play selected segment' })).toBeDisabled();
   });
 
@@ -314,12 +333,85 @@ describe('Android practice project screen', () => {
       mockPatchSnapshot({ status: 'playing' });
     });
 
-    await fireEvent.press(screen.getByRole('radio', { name: '0.8x playback speed' }));
+    await fireEvent.press(screen.getByRole('radio', { name: '0.8x speed' }));
 
     expect(mockSetRate).toHaveBeenCalledWith(0.8);
     expect(mockEnterPractice).not.toHaveBeenCalled();
     expect(mockPreparePracticeSegment).not.toHaveBeenCalled();
     await waitFor(() => expect(mockUpdateSelectedRate).toHaveBeenCalledWith(PROJECT.id, 0.8));
+  });
+
+  it('keeps speed and configured segments enabled while lead-in persistence is pending', async () => {
+    let resolvePreference!: (value: undefined) => void;
+    const pendingPreference = new Promise<undefined>((resolve) => {
+      resolvePreference = resolve;
+    });
+    mockUpdateLeadInMs.mockReturnValueOnce(pendingPreference);
+    const screen = await renderPrepared();
+
+    fireEvent(
+      screen.getByRole('adjustable', { name: 'Seconds before segment start' }),
+      'accessibilityAction',
+      { nativeEvent: { actionName: 'decrement' } },
+    );
+    await waitFor(() => expect(mockUpdateLeadInMs).toHaveBeenCalledWith(PROJECT.id, 4_000));
+
+    await act(() => {
+      useProjectStore.setState({ pendingProjectId: PROJECT.id });
+    });
+
+    expectConfiguredPracticeChoicesEnabled(screen);
+
+    await act(async () => {
+      useProjectStore.setState({ pendingProjectId: null });
+      resolvePreference(undefined);
+      await pendingPreference;
+    });
+  });
+
+  it('keeps speed and configured segments enabled while speed persistence is pending', async () => {
+    let resolvePreference!: (value: undefined) => void;
+    const pendingPreference = new Promise<undefined>((resolve) => {
+      resolvePreference = resolve;
+    });
+    mockUpdateSelectedRate.mockReturnValueOnce(pendingPreference);
+    const screen = await renderPrepared();
+
+    fireEvent.press(screen.getByRole('radio', { name: '0.8x speed' }));
+    await waitFor(() => expect(mockUpdateSelectedRate).toHaveBeenCalledWith(PROJECT.id, 0.8));
+
+    await act(() => {
+      useProjectStore.setState({ pendingProjectId: PROJECT.id });
+    });
+
+    expectConfiguredPracticeChoicesEnabled(screen);
+
+    await act(async () => {
+      useProjectStore.setState({ pendingProjectId: null });
+      resolvePreference(undefined);
+      await pendingPreference;
+    });
+  });
+
+  it('keeps lead-in, speed and configured segments enabled while segment preparation is pending', async () => {
+    let resolvePreparation!: (prepared: boolean) => void;
+    const pendingPreparation = new Promise<boolean>((resolve) => {
+      resolvePreparation = resolve;
+    });
+    const screen = await renderPrepared();
+    mockPreparePracticeSegment.mockClear();
+    mockPreparePracticeSegment.mockReturnValueOnce(pendingPreparation);
+
+    fireEvent.press(screen.getByRole('button', { name: /Segment 2/ }));
+    await waitFor(() => expect(mockPreparePracticeSegment).toHaveBeenCalledTimes(1));
+
+    expect(screen.getByRole('adjustable', { name: 'Seconds before segment start' })).toBeEnabled();
+    expectConfiguredPracticeChoicesEnabled(screen);
+
+    await act(async () => {
+      resolvePreparation(true);
+      await pendingPreparation;
+    });
   });
 
   it('starts from the range beginning and resets there when Pause is pressed', async () => {
@@ -385,7 +477,7 @@ describe('Android practice project screen', () => {
     },
   );
 
-  it('changes lead-in without interrupting playback and uses it on the next Pause', async () => {
+  it('pauses playback when lead-in changes and uses the new value on the next Play', async () => {
     const screen = await renderPrepared();
     await act(() => {
       mockPatchSnapshot({ status: 'playing', sourcePositionMs: 12_500 });
@@ -399,21 +491,22 @@ describe('Android practice project screen', () => {
       { nativeEvent: { actionName: 'decrement' } },
     );
 
-    expect(screen.getByText('Start before segment · 4 seconds')).toBeTruthy();
-    expect(mockSnapshot.status).toBe('playing');
+    expect(screen.getByText('Start before')).toBeTruthy();
+    expect(screen.queryByText(/4 seconds/)).toBeNull();
+    expect(mockSnapshot.status).toBe('paused');
     expect(mockSnapshot.sourcePositionMs).toBe(12_500);
     expect(mockPreparePracticeSegment).not.toHaveBeenCalled();
-    expect(mockPause).not.toHaveBeenCalled();
+    expect(mockPause).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(mockUpdateLeadInMs).toHaveBeenCalledWith(PROJECT.id, 4_000));
 
-    await fireEvent.press(screen.getByRole('button', { name: 'Pause playback' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Play selected segment' }));
     expect(mockPreparePracticeSegment).toHaveBeenCalledWith({
       segmentIndex: 0,
       clipStartMs: 6_000,
       clipEndMs: 20_000,
       rate: 1,
     });
-    expect(mockTogglePractice).not.toHaveBeenCalled();
+    expect(mockTogglePractice).toHaveBeenCalledTimes(1);
   });
 
   it('shows an error if the lead-in preference cannot be saved', async () => {

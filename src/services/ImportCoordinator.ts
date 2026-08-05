@@ -8,10 +8,6 @@ import type { DanceProject } from '@/domain/project';
 import { ProjectNameSchema, normalizeProjectName } from '@/domain/validation';
 import { type FinalizeImportInput, projectRepository } from '@/repositories/ProjectRepository';
 import { developmentDiagnosticState } from '@/services/DevelopmentDiagnosticState';
-import {
-  type PartialAudioValidator,
-  partialAudioValidator,
-} from '@/services/PartialAudioValidator';
 import { type StorageLayout, storageLayout } from '@/services/StorageLayout';
 import {
   type StructuredDiagnosticsRecorder,
@@ -144,7 +140,6 @@ export interface ImportCoordinatorDependencies {
   readonly media?: ImportMediaDependency;
   readonly repository?: ImportProjectRepository;
   readonly layout?: Pick<StorageLayout, 'importPartialAudioUri'>;
-  readonly audioValidator?: PartialAudioValidator;
   readonly importState?: ImportStateController;
   readonly refreshProjects?: () => Promise<void>;
   readonly randomUuid?: () => string;
@@ -159,7 +154,6 @@ interface ActiveImport {
   readonly operationId: string;
   readonly projectId: string;
   readonly onProgress?: (snapshot: ImportProgressSnapshot) => void;
-  readonly audioUri: string;
   cancelRequested: boolean;
   commitStarted: boolean;
   finished: boolean;
@@ -281,7 +275,6 @@ export class ImportCoordinator {
   private readonly media: ImportMediaDependency;
   private readonly repository: ImportProjectRepository;
   private readonly layout: Pick<StorageLayout, 'importPartialAudioUri'>;
-  private readonly audioValidator: PartialAudioValidator;
   private readonly importState: ImportStateController;
   private readonly refreshProjects: () => Promise<void>;
   private readonly randomUuid: () => string;
@@ -298,7 +291,6 @@ export class ImportCoordinator {
     this.media = dependencies.media ?? tempoLoopMediaService;
     this.repository = dependencies.repository ?? projectRepository;
     this.layout = dependencies.layout ?? storageLayout;
-    this.audioValidator = dependencies.audioValidator ?? partialAudioValidator;
     this.importState = dependencies.importState ?? importStateController();
     this.refreshProjects =
       dependencies.refreshProjects ?? (() => useProjectStore.getState().refresh());
@@ -424,7 +416,6 @@ export class ImportCoordinator {
     const active: ActiveImport = {
       operationId,
       projectId,
-      audioUri,
       onProgress: request.onProgress,
       cancelRequested: false,
       commitStarted: false,
@@ -485,7 +476,11 @@ export class ImportCoordinator {
         durationMs: result.durationMs,
         outputSizeBytes: result.audioSizeBytes,
       });
-      await this.audioValidator.validateLoadable(audioUri);
+      // TempoLoopMedia has already opened the completed output twice with
+      // MediaExtractor and verified one AAC audio track, a positive duration,
+      // a non-empty file, and stable metadata. Do not attach this staging file
+      // to the shared expo-audio player: SDK 57's Android replace(null) bridge
+      // cannot reliably release it on every installed Development binary.
       this.throwIfCancelled(active);
 
       active.commitStarted = true;
@@ -565,7 +560,6 @@ export class ImportCoordinator {
       } catch {
         // A stale event is rejected by operation ID and active-task identity.
       }
-      this.audioValidator.clearSource(audioUri);
       if (committedProject === null) {
         try {
           await this.repository.removeImportDirectory(projectId);
@@ -600,7 +594,6 @@ export class ImportCoordinator {
 
     active.cancelRequested = true;
     this.importState.requestCancel(active.operationId);
-    this.audioValidator.clearSource(active.audioUri);
     try {
       await this.media.cancelImport(active.operationId);
     } catch (error) {

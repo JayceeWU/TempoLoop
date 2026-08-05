@@ -38,7 +38,6 @@ import { projectRepository } from '@/repositories/ProjectRepository';
 import { useProjectStore } from '@/stores/useProjectStore';
 import { canAcceptPlaybackToggle } from '@/utils/interaction';
 import { navigateBackOrHome } from '@/utils/navigation';
-import { formatSegmentTime } from '@/utils/time';
 
 function projectIdFromParam(value: string | string[] | undefined): string | null {
   if (typeof value === 'string' && value.length > 0) {
@@ -72,13 +71,13 @@ export default function PracticeProjectScreen() {
   const initializeProjects = useProjectStore((state) => state.initialize);
   const updateSelectedRate = useProjectStore((state) => state.updateSelectedRate);
   const updateLeadInMs = useProjectStore((state) => state.updateLeadInMs);
-  const pendingProjectId = useProjectStore((state) => state.pendingProjectId);
   const projectStoreError = useProjectStore((state) => state.error);
   const player = useTempoLoopPlayer();
   const playerRef = useRef(player);
   const projectRef = useRef<DanceProject | null>(null);
   const focusTokenRef = useRef(0);
   const prepareCommandRef = useRef(0);
+  const isPreparingSegmentRef = useRef(false);
   const lastPlaybackToggleAtRef = useRef<number | null>(null);
   const initializationRequestedRef = useRef(false);
   const leadInProjectIdRef = useRef<string | null>(null);
@@ -219,6 +218,7 @@ export default function PracticeProjectScreen() {
       const token = focusTokenRef.current + 1;
       focusTokenRef.current = token;
       prepareCommandRef.current += 1;
+      isPreparingSegmentRef.current = false;
       setIsOpeningEditor(false);
       setIsPreparingSegment(false);
       setIsToggling(false);
@@ -283,6 +283,7 @@ export default function PracticeProjectScreen() {
       const token = focusTokenRef.current;
       const range = calculatePlaybackRange(segment, leadInMsRef.current);
       setSelectedSegment(segmentIndex);
+      isPreparingSegmentRef.current = true;
       setIsPreparingSegment(true);
       setAudioLoadFailed(false);
       void playerRef.current
@@ -297,6 +298,7 @@ export default function PracticeProjectScreen() {
         })
         .finally(() => {
           if (tokenIsCurrent(token) && prepareCommandRef.current === command) {
+            isPreparingSegmentRef.current = false;
             setIsPreparingSegment(false);
           }
         });
@@ -310,7 +312,7 @@ export default function PracticeProjectScreen() {
       if (
         currentProject === null ||
         isEntering ||
-        isPreparingSegment ||
+        isPreparingSegmentRef.current ||
         isOpeningEditor ||
         rate === playerRef.current.snapshot.rate ||
         !playerRef.current.setRate(rate)
@@ -325,7 +327,7 @@ export default function PracticeProjectScreen() {
         }
       });
     },
-    [isEntering, isOpeningEditor, isPreparingSegment, tokenIsCurrent, updateSelectedRate],
+    [isEntering, isOpeningEditor, tokenIsCurrent, updateSelectedRate],
   );
 
   const handleSelectLeadIn = useCallback(
@@ -333,6 +335,10 @@ export default function PracticeProjectScreen() {
       const currentProject = projectRef.current;
       if (currentProject === null || isEntering || isOpeningEditor) {
         return;
+      }
+
+      if (playerRef.current.snapshot.status === 'playing') {
+        playerRef.current.pause();
       }
 
       leadInMsRef.current = leadInMs;
@@ -488,8 +494,7 @@ export default function PracticeProjectScreen() {
 
   const displayRate = playerOwnsProject ? player.snapshot.rate : project.selectedRate;
   const showRetry = audioLoadFailed || (playerOwnsProject && player.snapshot.status === 'error');
-  const controlsDisabled =
-    !playerOwnsProject || isEntering || isOpeningEditor || pendingProjectId === project.id;
+  const controlsDisabled = !playerOwnsProject || isEntering || isOpeningEditor;
 
   return (
     <SafeAreaView edges={['top', 'left', 'right', 'bottom']} style={styles.safeArea}>
@@ -523,21 +528,23 @@ export default function PracticeProjectScreen() {
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <Text style={styles.sectionHeading}>{COPY.practice.speedHeading}</Text>
         <SpeedSelector
-          disabled={controlsDisabled || isPreparingSegment}
+          disabled={controlsDisabled}
           onSelectRate={handleSelectRate}
           selectedRate={displayRate}
         />
 
-        <Text style={styles.sectionHeading}>
-          {COPY.practice.leadInHeading} · {COPY.practice.leadInValue(selectedLeadInMs / 1_000)}
+        <Text style={[styles.sectionHeading, styles.sectionHeadingSpaced]}>
+          {COPY.practice.leadInHeading}
         </Text>
         <LeadInSelector
-          disabled={!playerOwnsProject || isEntering || isPreparingSegment || isOpeningEditor}
+          disabled={controlsDisabled}
           onSelectLeadIn={handleSelectLeadIn}
           selectedLeadInMs={selectedLeadInMs}
         />
 
-        <Text style={styles.sectionHeading}>{COPY.practice.segmentsHeading}</Text>
+        <Text style={[styles.sectionHeading, styles.sectionHeadingSpaced]}>
+          {COPY.practice.segmentsHeading}
+        </Text>
         <SegmentGrid
           durationMs={project.durationMs}
           interactionDisabled={controlsDisabled}
@@ -546,34 +553,24 @@ export default function PracticeProjectScreen() {
           selectedSegment={selectedSegment}
         />
 
-        <View style={styles.statusArea}>
-          {selectedRange === null ? (
-            <Text style={styles.statusText}>{COPY.practice.noConfiguredSegments}</Text>
-          ) : (
-            <Text style={styles.statusText}>
-              {COPY.practice.rangeSummary(
-                formatSegmentTime(selectedRange.playFromMs),
-                formatSegmentTime(selectedRange.stopAtMs),
-                formatSegmentTime(player.snapshot.sourcePositionMs),
-              )}
-            </Text>
-          )}
+        {isEntering || isPreparingSegment || player.snapshot.status === 'loading' || showRetry ? (
+          <View style={styles.statusArea}>
+            {isEntering || isPreparingSegment || player.snapshot.status === 'loading' ? (
+              <Text style={styles.statusText}>{COPY.practice.loadingAudio}</Text>
+            ) : null}
 
-          {isEntering || isPreparingSegment || player.snapshot.status === 'loading' ? (
-            <Text style={styles.statusText}>{COPY.practice.loadingAudio}</Text>
-          ) : null}
-
-          {showRetry ? (
-            <View style={styles.retryArea}>
-              <Text style={styles.statusText}>{COPY.practice.audioUnavailable}</Text>
-              <AppButton
-                label={COPY.practice.retryAudio}
-                onPress={handleRetryAudio}
-                variant="secondary"
-              />
-            </View>
-          ) : null}
-        </View>
+            {showRetry ? (
+              <View style={styles.retryArea}>
+                <Text style={styles.statusText}>{COPY.practice.audioUnavailable}</Text>
+                <AppButton
+                  label={COPY.practice.retryAudio}
+                  onPress={handleRetryAudio}
+                  variant="secondary"
+                />
+              </View>
+            ) : null}
+          </View>
+        ) : null}
       </ScrollView>
 
       <View style={styles.playbackArea}>
@@ -630,22 +627,24 @@ const styles = StyleSheet.create({
   },
   content: {
     flexGrow: 1,
-    paddingBottom: spacing.xl,
-    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.md,
+    paddingHorizontal: spacing.md,
   },
   sectionHeading: {
     color: colors.textMuted,
     fontSize: fontSizes.caption,
     fontWeight: fontWeights.semibold,
-    marginBottom: spacing.sm,
-    marginTop: spacing.lg,
+    marginBottom: spacing.xs,
+    marginTop: spacing.md,
     textTransform: 'uppercase',
+  },
+  sectionHeadingSpaced: {
+    marginTop: spacing.lg,
   },
   statusArea: {
     alignItems: 'center',
     gap: spacing.sm,
-    minHeight: 80,
-    paddingTop: spacing.lg,
+    paddingTop: spacing.sm,
   },
   statusText: {
     color: colors.textMuted,

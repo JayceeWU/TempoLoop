@@ -33,20 +33,6 @@ function repairReason(status: ProjectMediaStatus): string {
   return reason || COPY.projectList.repairUnknownReason;
 }
 
-export function formatProjectUpdatedDate(updatedAtIso: string): string {
-  const timestamp = Date.parse(updatedAtIso);
-  if (!Number.isFinite(timestamp)) {
-    return COPY.projectList.updatedUnknown;
-  }
-
-  return new Intl.DateTimeFormat('en-US', {
-    day: 'numeric',
-    month: 'short',
-    timeZone: 'UTC',
-    year: 'numeric',
-  }).format(new Date(timestamp));
-}
-
 export interface ProjectCardProps {
   project: DanceProject;
   mediaStatus: ProjectMediaStatus | null;
@@ -66,14 +52,13 @@ function ProjectCardComponent({
 }: ProjectCardProps) {
   const duration = formatDuration(project.durationMs);
   const configuredCount = configuredSegmentCount(project);
-  const updated = COPY.projectList.updated(formatProjectUpdatedDate(project.updatedAtIso));
 
   if (mediaStatus?.state === 'needs-repair') {
     return (
       <View
         accessibilityLabel={`${project.name}. ${COPY.projectList.repairStatus}. ${repairReason(
           mediaStatus,
-        )} ${updated}`}
+        )}`}
         accessibilityState={{ busy: isPending }}
         style={[styles.card, styles.repairCard]}
       >
@@ -83,7 +68,6 @@ function ProjectCardComponent({
           </Text>
           <Text style={styles.repairStatus}>{COPY.projectList.repairStatus}</Text>
           <Text style={styles.repairReason}>{repairReason(mediaStatus)}</Text>
-          <Text style={styles.updated}>{updated}</Text>
         </View>
         <Pressable
           accessibilityHint={COPY.projectList.repairDeleteAccessibilityHint}
@@ -112,7 +96,7 @@ function ProjectCardComponent({
         accessibilityLabel={`${project.name}. ${COPY.projectList.projectAccessibilitySummary(
           duration,
           configuredCount,
-        )}. ${updated}`}
+        )}`}
         accessibilityRole="button"
         accessibilityState={{ busy: isPending, disabled: isPending }}
         disabled={isPending}
@@ -126,12 +110,11 @@ function ProjectCardComponent({
           <Text numberOfLines={1} style={styles.projectSummary}>
             {COPY.projectList.projectSummary(duration, configuredCount)}
           </Text>
-          <Text numberOfLines={1} style={styles.waveformStatus}>
-            {COPY.projectList.waveformStatus[project.waveformStatus]}
-          </Text>
-          <Text numberOfLines={1} style={styles.updated}>
-            {updated}
-          </Text>
+          {project.waveformStatus !== 'ready' ? (
+            <Text numberOfLines={1} style={styles.waveformStatus}>
+              {COPY.projectList.waveformStatus[project.waveformStatus]}
+            </Text>
+          ) : null}
         </View>
       </Pressable>
       <Pressable
@@ -196,12 +179,6 @@ const styles = StyleSheet.create({
     lineHeight: 24,
   },
   projectSummary: {
-    color: colors.textMuted,
-    fontSize: fontSizes.caption,
-    lineHeight: 18,
-    marginTop: spacing.xxs,
-  },
-  updated: {
     color: colors.textMuted,
     fontSize: fontSizes.caption,
     lineHeight: 18,

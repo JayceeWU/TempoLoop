@@ -17,7 +17,6 @@ import {
   type SelectedMedia,
   suggestedProjectName,
 } from '@/services/ImportCoordinator';
-import type { PartialAudioValidator } from '@/services/PartialAudioValidator';
 import { DevelopmentLog } from '@/services/DevelopmentLog';
 import { StructuredDevelopmentDiagnostics } from '@/services/StructuredDevelopmentDiagnostics';
 import { TempoLoopMediaServiceError } from '@/services/TempoLoopMediaService';
@@ -202,15 +201,6 @@ function createHarness(options: HarnessOptions = {}) {
       order.push('keep-awake-off');
     }),
   };
-  const audioValidator: PartialAudioValidator = {
-    validateLoadable: jest.fn(async (uri) => {
-      expect(uri).toMatch(
-        /^file:\/\/\/documents\/TempoLoop\/imports\/\.import-[0-9a-f-]+\/audio\.m4a\.partial$/,
-      );
-      order.push('audio-load-check');
-    }),
-    clearSource: jest.fn(() => order.push('audio-clear')),
-  };
   const refreshProjects = jest.fn(
     options.refresh ?? (async () => order.push('refresh') as unknown as void),
   );
@@ -220,7 +210,6 @@ function createHarness(options: HarnessOptions = {}) {
     media,
     repository,
     keepAwake,
-    audioValidator,
     layout: {
       importPartialAudioUri: (projectId) =>
         `file:///documents/TempoLoop/imports/.import-${projectId}/audio.m4a.partial`,
@@ -237,7 +226,6 @@ function createHarness(options: HarnessOptions = {}) {
     media,
     repository,
     keepAwake,
-    audioValidator,
     refreshProjects,
     finalizedInputs,
     order,
@@ -373,7 +361,7 @@ describe('ImportCoordinator selection', () => {
 });
 
 describe('ImportCoordinator transaction', () => {
-  it('runs inspect, native import, expo-audio validation, atomic finalize, and refresh in order', async () => {
+  it('runs inspect, native validated import, atomic finalize, and refresh in order', async () => {
     const harness = createHarness();
     const selection = await select(harness);
 
@@ -389,11 +377,9 @@ describe('ImportCoordinator transaction', () => {
       'keep-awake-on',
       'inspect',
       'native-import',
-      'audio-load-check',
       'finalize',
       'refresh',
       'unsubscribe',
-      'audio-clear',
       'keep-awake-off',
     ]);
     expect(harness.finalizedInputs).toEqual([
@@ -506,17 +492,11 @@ describe('ImportCoordinator transaction', () => {
         harness.coordinator.importProject({ selection: secondSelection!, name: 'Second' }),
       ).resolves.toMatchObject({ id: projectTwoId, name: 'Second' });
 
-      expect(harness.audioValidator.validateLoadable).toHaveBeenNthCalledWith(1, PARTIAL_URI);
-      expect(harness.audioValidator.validateLoadable).toHaveBeenNthCalledWith(
-        2,
-        `file:///documents/TempoLoop/imports/.import-${projectTwoId}/audio.m4a.partial`,
-      );
       expect(harness.repository.finalizeImport).toHaveBeenCalledTimes(2);
-      expect(harness.audioValidator.clearSource).toHaveBeenCalledTimes(2);
     },
   );
 
-  it('allows another import after an audio validation failure', async () => {
+  it('allows another import after a native export failure', async () => {
     const projectTwoId = '55555555-5555-4555-8555-555555555555';
     const harness = createHarness({
       pickerResult: pickerResult({
@@ -534,17 +514,16 @@ describe('ImportCoordinator transaction', () => {
       ],
     });
     jest
-      .mocked(harness.audioValidator.validateLoadable)
+      .mocked(harness.media.importProjectMedia)
       .mockRejectedValueOnce(
-        new TempoLoopMediaServiceError('E_AUDIO_LOAD_FAILED', 'first validation failed'),
-      )
-      .mockResolvedValueOnce(undefined);
+        new TempoLoopMediaServiceError('E_UNSUPPORTED_MEDIA', 'first export failed'),
+      );
 
     const firstSelection = await harness.coordinator.selectVideoFromGallery();
     expect(firstSelection).not.toBeNull();
     await expect(
       harness.coordinator.importProject({ selection: firstSelection!, name: 'First' }),
-    ).rejects.toMatchObject({ code: 'E_AUDIO_LOAD_FAILED' });
+    ).rejects.toMatchObject({ code: 'E_UNSUPPORTED_MEDIA' });
     expect(harness.repository.finalizeImport).not.toHaveBeenCalled();
 
     const secondSelection = await harness.coordinator.selectAudio();
@@ -602,7 +581,6 @@ describe('ImportCoordinator transaction', () => {
     ).rejects.toMatchObject({ code: 'E_EXPORT_EMPTY' });
 
     expect(harness.media.cancelImport).toHaveBeenCalledWith(OPERATION_ID);
-    expect(harness.audioValidator.validateLoadable).not.toHaveBeenCalled();
     expect(harness.repository.finalizeImport).not.toHaveBeenCalled();
     expect(harness.repository.removeImportDirectory).toHaveBeenCalledWith(PROJECT_ID);
     expect(useImportStore.getState()).toMatchObject({ status: 'failed', sourceUri: null });

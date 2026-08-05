@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { COPY } from '@/constants/copy';
@@ -14,50 +15,79 @@ export function playbackRateLabel(rate: PlaybackRate): string {
   return `${rate.toFixed(1)}x`;
 }
 
-export function SpeedSelector({
+interface SpeedButtonProps {
+  readonly rate: PlaybackRate;
+  readonly selected: boolean;
+  readonly disabled: boolean;
+  readonly onSelectRate: (rate: PlaybackRate) => void;
+}
+
+const SpeedButton = memo(function SpeedButton({
+  rate,
+  selected,
+  disabled,
+  onSelectRate,
+}: SpeedButtonProps) {
+  const label = playbackRateLabel(rate);
+
+  return (
+    <Pressable
+      accessibilityLabel={COPY.practice.speedAccessibilityLabel(label)}
+      accessibilityRole="radio"
+      accessibilityState={{
+        checked: selected,
+        disabled,
+      }}
+      disabled={disabled}
+      onPress={() => onSelectRate(rate)}
+      style={({ pressed }) => [
+        styles.button,
+        selected && styles.selectedButton,
+        pressed && !disabled && styles.pressedButton,
+        disabled && styles.disabledButton,
+      ]}
+    >
+      <Text
+        style={[styles.label, selected && styles.selectedLabel, disabled && styles.disabledLabel]}
+      >
+        {label}
+      </Text>
+    </Pressable>
+  );
+});
+
+function SpeedSelectorComponent({
   selectedRate,
   disabled = false,
   onSelectRate,
 }: SpeedSelectorProps) {
   return (
     <View accessibilityRole="radiogroup" style={styles.row}>
-      {PLAYBACK_RATES.map((rate) => {
-        const isSelected = rate === selectedRate;
-        const label = playbackRateLabel(rate);
-
-        return (
-          <Pressable
-            accessibilityLabel={COPY.practice.speedAccessibilityLabel(label)}
-            accessibilityRole="radio"
-            accessibilityState={{
-              checked: isSelected,
-              disabled,
-            }}
-            disabled={disabled}
-            key={rate}
-            onPress={() => onSelectRate(rate)}
-            style={({ pressed }) => [
-              styles.button,
-              isSelected && styles.selectedButton,
-              pressed && !disabled && styles.pressedButton,
-              disabled && styles.disabledButton,
-            ]}
-          >
-            <Text
-              style={[
-                styles.label,
-                isSelected && styles.selectedLabel,
-                disabled && styles.disabledLabel,
-              ]}
-            >
-              {label}
-            </Text>
-          </Pressable>
-        );
-      })}
+      {PLAYBACK_RATES.map((rate) => (
+        <SpeedButton
+          disabled={disabled}
+          key={rate}
+          onSelectRate={onSelectRate}
+          rate={rate}
+          selected={rate === selectedRate}
+        />
+      ))}
     </View>
   );
 }
+
+function areSpeedSelectorPropsEqual(
+  previous: SpeedSelectorProps,
+  next: SpeedSelectorProps,
+): boolean {
+  return (
+    previous.selectedRate === next.selectedRate &&
+    (previous.disabled ?? false) === (next.disabled ?? false) &&
+    previous.onSelectRate === next.onSelectRate
+  );
+}
+
+export const SpeedSelector = memo(SpeedSelectorComponent, areSpeedSelectorPropsEqual);
 
 const styles = StyleSheet.create({
   row: {
