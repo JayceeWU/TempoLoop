@@ -1,5 +1,9 @@
 import type { DanceProject, StoredWaveform } from '@/domain/project';
-import { DanceProjectSchema, StoredWaveformSchema } from '@/domain/validation';
+import {
+  StoredDanceProjectSchema,
+  StoredWaveformSchema,
+  migrateLegacyDanceProject,
+} from '@/domain/validation';
 import {
   IMPORT_DIRECTORY_PREFIX,
   IMPORT_METADATA_FILE_NAME,
@@ -364,8 +368,11 @@ export class RecoveryService {
     }
     try {
       const raw: unknown = JSON.parse(await this.layout.fileSystem.readText(uri));
-      const parsed = DanceProjectSchema.safeParse(raw);
-      return parsed.success && parsed.data.id === expectedProjectId ? parsed.data : null;
+      const parsed = StoredDanceProjectSchema.safeParse(raw);
+      if (!parsed.success || parsed.data.id !== expectedProjectId) {
+        return null;
+      }
+      return parsed.data.schemaVersion === 1 ? migrateLegacyDanceProject(parsed.data) : parsed.data;
     } catch {
       return null;
     }
@@ -522,7 +529,7 @@ export class RecoveryService {
     try {
       const raw: unknown = JSON.parse(await this.layout.fileSystem.readText(siblingUri));
       if (siblingName === PROJECT_METADATA_FILE_NAME) {
-        const parsed = DanceProjectSchema.safeParse(raw);
+        const parsed = StoredDanceProjectSchema.safeParse(raw);
         return parsed.success && parsed.data.id === projectId;
       }
       const parsedWaveform = StoredWaveformSchema.safeParse(raw);

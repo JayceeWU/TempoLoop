@@ -3,7 +3,7 @@ import type * as DocumentPicker from 'expo-document-picker';
 import { MAX_AUDIO_BYTES, MAX_VIDEO_BYTES } from '@/constants/app';
 import { COPY } from '@/constants/copy';
 import type { DanceProject } from '@/domain/project';
-import { createEmptySegments } from '@/domain/segment';
+import { createDefaultPracticeMarkers } from '@/domain/segment';
 import type { FinalizeImportInput } from '@/repositories/ProjectRepository';
 import {
   IMPORT_KEEP_AWAKE_TAG,
@@ -59,7 +59,7 @@ function mediaResult(overrides: Partial<ImportMediaResult> = {}): ImportMediaRes
 
 function project(input: FinalizeImportInput): DanceProject {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     id: input.projectId,
     name: input.name,
     createdAtIso: '2026-07-31T12:00:00.000Z',
@@ -72,7 +72,7 @@ function project(input: FinalizeImportInput): DanceProject {
     sourceSizeBytes: input.inspection.sourceSizeBytes,
     selectedRate: 1,
     leadInMs: 6_000,
-    segments: createEmptySegments(),
+    practiceMarkers: createDefaultPracticeMarkers(input.result.durationMs),
   };
 }
 

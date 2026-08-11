@@ -8,13 +8,20 @@ import {
   WAVEFORM_SCHEMA_VERSION,
 } from '@/constants/app';
 import { LEAD_IN_OPTIONS_MS, PLAYBACK_RATES } from '@/domain/playback';
-import type { DanceProject, StoredWaveform } from '@/domain/project';
+import type { DanceProject, LegacyDanceProject, StoredWaveform } from '@/domain/project';
 import {
+  PRACTICE_MARKER_IDS,
+  PRACTICE_START_INDEXES,
   SEGMENT_IDS,
   SEGMENT_INDEXES,
+  createDefaultPracticeMarkers,
+  getPracticeMarkersValidationIssue,
   getSegmentValidationIssue,
   type DanceSegment,
   type DanceSegments,
+  type PracticeMarkerId,
+  type PracticeMarkers,
+  type PracticeStartIndex,
   type SegmentId,
   type SegmentIndex,
 } from '@/domain/segment';
@@ -51,14 +58,73 @@ export const ProjectNameSchema = z
       }),
   );
 
+const NullableMillisecondsSchema = z.number().finite().int().nullable();
+
+export const PracticeStartIndexSchema: z.ZodType<PracticeStartIndex> = z.union(
+  PRACTICE_START_INDEXES.map((index) => z.literal(index)),
+);
+
+export const PracticeMarkerIdSchema: z.ZodType<PracticeMarkerId> = z.union(
+  PRACTICE_MARKER_IDS.map((id) => z.literal(id)),
+);
+
+const PracticeStartTimesSchema = z.tuple([
+  NullableMillisecondsSchema,
+  NullableMillisecondsSchema,
+  NullableMillisecondsSchema,
+  NullableMillisecondsSchema,
+  NullableMillisecondsSchema,
+  NullableMillisecondsSchema,
+]);
+
+function practiceMarkerPath(markerId: PracticeMarkerId): (string | number)[] {
+  if (markerId === 'final-end') {
+    return ['finalEndMs'];
+  }
+  return ['startMs', PRACTICE_MARKER_IDS.indexOf(markerId)];
+}
+
+function practiceMarkerIssueMessage(code: string): string {
+  switch (code) {
+    case 'START_1_REQUIRED':
+      return 'Start 1 is required.';
+    case 'START_GAP':
+      return 'Practice starts must form a continuous prefix.';
+    case 'FINAL_END_REQUIRED':
+      return 'Final End is required.';
+    case 'NON_INTEGER':
+      return 'Practice marker times must use integer milliseconds.';
+    case 'OUT_OF_BOUNDS':
+      return 'Practice marker times must stay inside the audio duration.';
+    default:
+      return 'Practice marker times must be strictly increasing.';
+  }
+}
+
+export const PracticeMarkersShapeSchema: z.ZodType<PracticeMarkers> = z.strictObject({
+  startMs: PracticeStartTimesSchema,
+  finalEndMs: NullableMillisecondsSchema,
+});
+
+export const PracticeMarkersSchema: z.ZodType<PracticeMarkers> =
+  PracticeMarkersShapeSchema.superRefine((markers, context) => {
+    const issue = getPracticeMarkersValidationIssue(markers, Number.MAX_SAFE_INTEGER);
+    if (issue !== null) {
+      context.addIssue({
+        code: 'custom',
+        path: practiceMarkerPath(issue.markerId),
+        message: practiceMarkerIssueMessage(issue.code),
+      });
+    }
+  });
+
+/* Schema-v1 segment validation is retained exclusively for migration. */
 export const SegmentIndexSchema: z.ZodType<SegmentIndex> = z.union(
   SEGMENT_INDEXES.map((index) => z.literal(index)),
 );
 export const SegmentIdSchema: z.ZodType<SegmentId> = z.union(
   SEGMENT_IDS.map((id) => z.literal(id)),
 );
-
-const NullableMillisecondsSchema = z.number().finite().int().nullable();
 
 function addSegmentValidationIssue(segment: DanceSegment, context: z.RefinementCtx): void {
   if (segment.id !== SEGMENT_IDS[segment.index]) {
@@ -70,39 +136,19 @@ function addSegmentValidationIssue(segment: DanceSegment, context: z.RefinementC
   }
 
   const issue = getSegmentValidationIssue(segment, Number.MAX_SAFE_INTEGER);
-
-  if (issue === null) {
-    return;
-  }
-
+  if (issue === null) return;
   if (issue === 'PARTIAL') {
     context.addIssue({
       code: 'custom',
       message: 'Start and end must both be set or both be unset.',
     });
-    return;
+  } else if (issue === 'NON_INTEGER') {
+    context.addIssue({ code: 'custom', message: 'Segment times must use integer milliseconds.' });
+  } else if (issue === 'OUT_OF_BOUNDS') {
+    context.addIssue({ code: 'custom', message: 'Segment times cannot be negative.' });
+  } else {
+    context.addIssue({ code: 'custom', message: 'Segment start must be before its end.' });
   }
-
-  if (issue === 'NON_INTEGER') {
-    context.addIssue({
-      code: 'custom',
-      message: 'Segment times must use integer milliseconds.',
-    });
-    return;
-  }
-
-  if (issue === 'OUT_OF_BOUNDS') {
-    context.addIssue({
-      code: 'custom',
-      message: 'Segment times cannot be negative.',
-    });
-    return;
-  }
-
-  context.addIssue({
-    code: 'custom',
-    message: 'Segment start must be before its end.',
-  });
 }
 
 const DanceSegmentShape = {
@@ -138,12 +184,9 @@ const NineDanceSegmentsSchema = z.tuple([
   indexedSegmentSchema(8),
 ]);
 
-/** Preserve existing six-segment schema-v1 projects by appending three empty rows. */
+/** Schema-v1 briefly used six rows; normalize it before the v1-to-v2 migration. */
 export const DanceSegmentsSchema: z.ZodType<DanceSegments> = z.preprocess((value) => {
-  if (!Array.isArray(value) || value.length !== 6) {
-    return value;
-  }
-
+  if (!Array.isArray(value) || value.length !== 6) return value;
   return [
     ...value,
     ...SEGMENT_INDEXES.slice(6).map((index) => ({
@@ -160,9 +203,7 @@ export const LeadInMsSchema = z.union(LEAD_IN_OPTIONS_MS.map((leadInMs) => z.lit
 export const WaveformStatusSchema = z.enum(['pending', 'ready', 'failed']);
 
 const IsoDateTimeSchema = z.string().datetime({ offset: true });
-
-const DanceProjectBaseSchema = z.strictObject({
-  schemaVersion: z.literal(PROJECT_SCHEMA_VERSION),
+const SharedProjectShape = {
   id: z.string().uuid(),
   name: ProjectNameSchema,
   createdAtIso: IsoDateTimeSchema,
@@ -175,26 +216,46 @@ const DanceProjectBaseSchema = z.strictObject({
   sourceSizeBytes: z.number().finite().int().nonnegative().nullable(),
   selectedRate: PlaybackRateSchema,
   leadInMs: LeadInMsSchema.default(DEFAULT_LEAD_IN_MS),
-  segments: DanceSegmentsSchema,
+};
+
+const DanceProjectBaseSchema = z.strictObject({
+  schemaVersion: z.literal(PROJECT_SCHEMA_VERSION),
+  ...SharedProjectShape,
+  practiceMarkers: PracticeMarkersSchema,
 });
 
 export const DanceProjectSchema: z.ZodType<DanceProject> = DanceProjectBaseSchema.superRefine(
   (project, context) => {
-    project.segments.forEach((segment, index) => {
-      if (
-        segment.startMs !== null &&
-        segment.endMs !== null &&
-        segment.endMs > project.durationMs
-      ) {
-        context.addIssue({
-          code: 'custom',
-          path: ['segments', index, 'endMs'],
-          message: 'Segment end cannot exceed the project duration.',
-        });
-      }
-    });
+    const issue = getPracticeMarkersValidationIssue(project.practiceMarkers, project.durationMs);
+    if (issue !== null) {
+      context.addIssue({
+        code: 'custom',
+        path: ['practiceMarkers', ...practiceMarkerPath(issue.markerId)],
+        message: practiceMarkerIssueMessage(issue.code),
+      });
+    }
   },
 );
+
+export const LegacyDanceProjectSchema: z.ZodType<LegacyDanceProject> = z.strictObject({
+  schemaVersion: z.literal(1),
+  ...SharedProjectShape,
+  segments: DanceSegmentsSchema,
+});
+
+export const StoredDanceProjectSchema: z.ZodType<DanceProject | LegacyDanceProject> = z.union([
+  DanceProjectSchema,
+  LegacyDanceProjectSchema,
+]);
+
+export function migrateLegacyDanceProject(project: LegacyDanceProject): DanceProject {
+  const { segments: _legacySegments, ...shared } = project;
+  return DanceProjectSchema.parse({
+    ...shared,
+    schemaVersion: PROJECT_SCHEMA_VERSION,
+    practiceMarkers: createDefaultPracticeMarkers(project.durationMs),
+  });
+}
 
 export const StoredWaveformSchema: z.ZodType<StoredWaveform> = z.strictObject({
   schemaVersion: z.literal(WAVEFORM_SCHEMA_VERSION),

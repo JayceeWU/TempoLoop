@@ -1,45 +1,47 @@
 import { memo } from 'react';
 import { StyleSheet, View } from 'react-native';
 
-import type { DanceSegments, SegmentIndex } from '@/domain/segment';
 import { SegmentButton } from '@/components/SegmentButton';
+import type { PracticeRange, PracticeRangeIndex } from '@/domain/segment';
 
-const SEGMENT_ROWS = [
+const RANGE_ROWS = [
   [0, 1, 2],
   [3, 4, 5],
   [6, 7, 8],
-] as const;
-const SEGMENT_GAP = 10;
+  [9, 10, 11],
+] as const satisfies readonly (readonly PracticeRangeIndex[])[];
+const RANGE_GAP = 6;
+const RANGE_GRID_HEIGHT = 248;
 
 export interface SegmentGridProps {
-  readonly segments: DanceSegments;
-  readonly durationMs: number;
-  readonly selectedSegment: SegmentIndex | null;
+  readonly ranges: readonly PracticeRange[];
+  readonly selectedRange: PracticeRangeIndex | null;
   readonly interactionDisabled?: boolean;
-  readonly onSelectSegment: (segmentIndex: SegmentIndex) => void;
+  readonly onSelectRange: (rangeIndex: PracticeRangeIndex) => void;
 }
 
 function SegmentGridComponent({
-  segments,
-  durationMs,
-  selectedSegment,
+  ranges,
+  selectedRange,
   interactionDisabled = false,
-  onSelectSegment,
+  onSelectRange,
 }: SegmentGridProps) {
   return (
-    <View style={styles.grid}>
-      {SEGMENT_ROWS.map((row) => (
+    <View style={styles.grid} testID="practice-range-grid">
+      {RANGE_ROWS.map((row) => (
         <View key={row[0]} style={styles.row}>
-          {row.map((segmentIndex) => {
-            const segment = segments[segmentIndex];
+          {row.map((rangeIndex) => {
+            const range = ranges[rangeIndex];
+            if (range === undefined) {
+              return null;
+            }
             return (
               <SegmentButton
-                durationMs={durationMs}
                 interactionDisabled={interactionDisabled}
-                key={segment.id}
-                onSelectSegment={onSelectSegment}
-                segment={segment}
-                selected={selectedSegment === segment.index}
+                key={range.id}
+                onSelectRange={onSelectRange}
+                range={range}
+                selected={selectedRange === range.index}
               />
             );
           })}
@@ -49,25 +51,32 @@ function SegmentGridComponent({
   );
 }
 
-function areSegmentsEqual(previous: DanceSegments, next: DanceSegments): boolean {
-  return previous.every((segment, index) => {
-    const nextSegment = next[index];
-    return (
-      segment.id === nextSegment.id &&
-      segment.index === nextSegment.index &&
-      segment.startMs === nextSegment.startMs &&
-      segment.endMs === nextSegment.endMs
-    );
-  });
+function areRangesEqual(
+  previous: readonly PracticeRange[],
+  next: readonly PracticeRange[],
+): boolean {
+  return (
+    previous.length === next.length &&
+    previous.every((range, index) => {
+      const nextRange = next[index];
+      return (
+        nextRange !== undefined &&
+        range.id === nextRange.id &&
+        range.index === nextRange.index &&
+        range.label === nextRange.label &&
+        range.startMs === nextRange.startMs &&
+        range.endMs === nextRange.endMs
+      );
+    })
+  );
 }
 
 function areSegmentGridPropsEqual(previous: SegmentGridProps, next: SegmentGridProps): boolean {
   return (
-    previous.durationMs === next.durationMs &&
-    previous.selectedSegment === next.selectedSegment &&
+    previous.selectedRange === next.selectedRange &&
     (previous.interactionDisabled ?? false) === (next.interactionDisabled ?? false) &&
-    previous.onSelectSegment === next.onSelectSegment &&
-    areSegmentsEqual(previous.segments, next.segments)
+    previous.onSelectRange === next.onSelectRange &&
+    areRangesEqual(previous.ranges, next.ranges)
   );
 }
 
@@ -75,10 +84,12 @@ export const SegmentGrid = memo(SegmentGridComponent, areSegmentGridPropsEqual);
 
 const styles = StyleSheet.create({
   grid: {
-    gap: SEGMENT_GAP,
+    gap: RANGE_GAP,
+    height: RANGE_GRID_HEIGHT,
   },
   row: {
+    flex: 1,
     flexDirection: 'row',
-    gap: SEGMENT_GAP,
+    gap: RANGE_GAP,
   },
 });

@@ -1,6 +1,6 @@
 # TempoLoop
 
-TempoLoop is a private, offline Android 7.0+ dance-practice app. It can extract music from a gallery video or directly import an audio file, normalize the result to an audio-only M4A in the app sandbox, and let one local user define nine independent, overlapping practice segments. Each segment can play at `1.0x`, `0.9x`, `0.8x`, `0.7x`, or `0.6x`, with a per-project lead-in of `0`, `2`, `4`, `6`, or `8` seconds.
+TempoLoop is a private, offline Android 7.0+ dance-practice app. It can extract music from a gallery video or directly import an audio file, normalize the result to an audio-only M4A in the app sandbox, and let one local user mark up to six consecutive dance sections. Those markers produce twelve useful single- and multi-section practice ranges. Each range can play at `1.0x`, `0.9x`, `0.8x`, `0.7x`, or `0.6x`, with a per-project lead-in of `0`, `2`, `4`, `6`, or `8` seconds.
 
 Version 1 is Android-only, English-only, and portrait-only. It has no account, analytics, cloud sync, server, background playback, lock-screen controls, broad media-library access, or Google Play release flow.
 
@@ -12,11 +12,13 @@ TempoLoop is especially useful for dance teachers during class. Preparing the mu
 
 1. Use `Extract from Video` to choose a gallery video, or `Import Audio` to choose a supported audio file.
 2. Name the Project. TempoLoop creates and validates a private `audio.m4a` copy, then opens the Project immediately. It builds the 2,048-sample waveform asynchronously while TempoLoop remains in the foreground; the selected source is never modified.
-3. Open `Edit Segments` and define up to nine independent ranges. Overlapping ranges are allowed, while incomplete or invalid ranges cannot be saved.
-4. On the practice screen, choose one of five playback speeds and a `0`, `2`, `4`, `6`, or `8` second lead-in.
-5. Press Play to start from `max(0, segment start - lead-in)`. When the track does not contain the full lead-in, TempoLoop first shows a silent countdown for the missing seconds. Playback continues for two wall-clock seconds after the saved segment end, then resets to the same start position. Pressing Pause also resets the range, so the next Play begins from the start instead of resuming from the paused position.
+3. Every imported Project initially treats the whole track as section `1`. Open `Edit Segments` to set consecutive `Start 1` through `Start 6` markers and one `Final End`. Start markers must be continuous and strictly ordered.
+4. On the practice screen, choose one of the available ranges (`1`, `2`, `1-2`, `3`, `4`, `3-4`, `5`, `6`, `5-6`, `1-4`, `3-6`, or `1-6`), one of five playback speeds, and a `0`, `2`, `4`, `6`, or `8` second lead-in. Ranges that cannot yet be derived from the saved markers remain disabled.
+5. Press Play to start from `max(0, range start - lead-in)`. When the track does not contain the full lead-in, TempoLoop first shows a silent countdown for the missing seconds. Playback continues for two wall-clock seconds after the derived range end, then resets to the same start position. Pressing Pause also resets the range, so the next Play begins from the start instead of resuming from the paused position.
 
-The Segment Editor keeps its audio controls fixed above the scrolling nine-segment list. Its compact purple waveform shows a 60-second window by default, supports pinch zoom from 10 to 60 seconds, and includes a full-track overview for moving the visible window. Editor playback remains at `1.0x`, and pausing in the editor retains the current position so it can be captured as a segment endpoint.
+The Segment Editor keeps its audio controls fixed above the scrolling seven-marker list (`Start 1` through `Start 6`, plus `Final End`). Its compact purple waveform shows a 60-second window by default, supports pinch zoom from 10 to 60 seconds, and includes a full-track overview for moving the visible window. Editor playback remains at `1.0x`, and pausing in the editor retains the current position so it can be captured as a marker.
+
+Project metadata uses schema v2. On first launch after upgrading, schema-v1 Projects are migrated atomically: audio, waveform, name, timestamps, rate, and lead-in are preserved, while the old independent segment times are replaced with the safe whole-track default (`Start 1 = 0`, `Final End = duration`).
 
 ## Architecture
 
@@ -28,7 +30,7 @@ The Segment Editor keeps its audio controls fixed above the scrolling nine-segme
 - `expo-audio` `57.0.3` owns the single application player used by the editor and practice routes through one root provider. Import never attaches staging media to this player.
 - A fail-fast postinstall patch enables Media3's `setHandleAudioBecomingNoisy(true)` and fixes SDK 57.0.3's Android `replace(null)` bridge by making its `AudioSource` parameter nullable, then synchronously calling `stop` plus `clearMediaItems`. The first change handles headphone or Bluetooth output loss; the second allows the playback coordinator to release a loaded Project before deletion. It configures the installed player and does not introduce a custom Kotlin player.
 - TempoLoop never sends `replace(null)` merely because an already-empty player is idle. It clears Media3 only when the playback coordinator owns a loaded Project source.
-- `PlaybackCoordinator` serializes source, mode, segment, seek, rate, exit, and reset commands with generation tokens. `SegmentEndGuard` uses the 50 ms native status stream and one rate-adjusted deadline fallback; it does not poll with `setInterval`.
+- `PlaybackCoordinator` serializes source, mode, practice-range, seek, rate, exit, and reset commands with generation tokens. `SegmentEndGuard` uses the 50 ms native status stream and one rate-adjusted deadline fallback; it does not poll with `setInterval`.
 - The coordinator rejects unsolicited native restarts after focus loss or foreground return; only a new explicit user Play action authorizes playback. Practice Pause prepares the selected range from its lead-in again, while editor Pause intentionally retains the current timestamp.
 - Project metadata and waveform JSON are Zod-validated and transactionally written. Before commit, the Kotlin pipeline opens the exported M4A twice with `MediaExtractor` and requires one AAC audio track, a positive duration, a non-empty file, and stable size/duration metadata. The import directory is then atomically finalized with `waveformStatus: pending`. Waveform generation writes `waveform.json` before atomically changing the status to `ready`; failure retains the audio and exposes a retry action.
 - The interface uses a fixed deep-purple theme (`#120A24` background and `#A970FF` accent), including the app icon, adaptive icon, splash screen, controls, and waveform editor.
@@ -179,7 +181,7 @@ Record real device model, Android version, measurements, Media3 resolution, and 
 - **A second import or Project deletion fails until the app restarts:** run `npm ci` so the fail-fast Expo Audio 57.0.3 postinstall patch is applied, then build and install a new Development or Preview APK over the existing app. Metro reloads cannot apply this native bridge fix. Do not uninstall first if the existing private Projects must be retained.
 - **Waveform is still building:** the Project is already playable and its Segment times can be edited. Keep TempoLoop in the foreground until the status changes to `Waveform ready`. If it changes to `Waveform unavailable`, open the Segment Editor and use the retry action.
 - **Slow playback changes pitch:** verify `shouldCorrectPitch` is enabled and test a freshly rebuilt APK with the lockfile's `expo-audio` version.
-- **A segment stops late:** record rate, device model, source format, and measured overshoot in `IMPLEMENTATION_NOTES.md` before considering the contract's isolated native boundary guard.
+- **A practice range stops late:** record rate, device model, source format, and measured overshoot in `IMPLEMENTATION_NOTES.md` before considering the contract's isolated native boundary guard.
 
 ## Product configuration
 

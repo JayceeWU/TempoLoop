@@ -1,13 +1,16 @@
-import { DEFAULT_LEAD_IN_MS } from '@/constants/app';
+import { DEFAULT_LEAD_IN_MS, PROJECT_SCHEMA_VERSION } from '@/constants/app';
 import type { LeadInMs, PlaybackRate } from '@/domain/playback';
 import type { DanceProject, StoredWaveform, WaveformStatus } from '@/domain/project';
-import { createEmptySegments, type DanceSegments } from '@/domain/segment';
+import { createDefaultPracticeMarkers, type PracticeMarkers } from '@/domain/segment';
 import {
   DanceProjectSchema,
-  DanceSegmentsSchema,
   LeadInMsSchema,
+  LegacyDanceProjectSchema,
+  PracticeMarkersSchema,
   ProjectNameSchema,
+  StoredDanceProjectSchema,
   StoredWaveformSchema,
+  migrateLegacyDanceProject,
 } from '@/domain/validation';
 import { developmentLog } from '@/services/DevelopmentLog';
 import {
@@ -241,11 +244,11 @@ export class ProjectRepository {
     }));
   }
 
-  updateSegments(projectId: string, segments: DanceSegments): Promise<void> {
-    const validatedSegments = DanceSegmentsSchema.parse(segments);
+  updatePracticeMarkers(projectId: string, practiceMarkers: PracticeMarkers): Promise<void> {
+    const validatedMarkers = PracticeMarkersSchema.parse(practiceMarkers);
     return this.updateProject(projectId, (project) => ({
       ...project,
-      segments: validatedSegments,
+      practiceMarkers: validatedMarkers,
     }));
   }
 
@@ -341,12 +344,29 @@ export class ProjectRepository {
 
       const metadataUri = this.layout.fileSystem.join(entry.uri, PROJECT_METADATA_FILE_NAME);
       let project: DanceProject | null = null;
+      let storedProject: ReturnType<typeof StoredDanceProjectSchema.parse> | null = null;
       try {
         const raw: unknown = JSON.parse(await this.layout.fileSystem.readText(metadataUri));
-        const parsed = DanceProjectSchema.safeParse(raw);
-        project = parsed.success && parsed.data.id === entry.name ? parsed.data : null;
+        const parsed = StoredDanceProjectSchema.safeParse(raw);
+        storedProject = parsed.success && parsed.data.id === entry.name ? parsed.data : null;
       } catch {
-        project = null;
+        storedProject = null;
+      }
+
+      if (storedProject?.schemaVersion === PROJECT_SCHEMA_VERSION) {
+        project = storedProject;
+      } else if (storedProject?.schemaVersion === 1) {
+        const migrated = migrateLegacyDanceProject(storedProject);
+        try {
+          await this.writeLegacyMigration(metadataUri, migrated);
+        } catch (error) {
+          throw new ProjectRepositoryError(
+            'E_PROJECT_METADATA_CORRUPT',
+            `Project "${entry.name}" could not be migrated safely.`,
+            { cause: error },
+          );
+        }
+        project = migrated;
       }
 
       if (project === null) {
@@ -512,7 +532,7 @@ export class ProjectRepository {
 
     const timestamp = input.createdAtIso ?? this.now();
     const project = DanceProjectSchema.parse({
-      schemaVersion: 1,
+      schemaVersion: PROJECT_SCHEMA_VERSION,
       id: input.projectId,
       name: ProjectNameSchema.parse(input.name),
       createdAtIso: timestamp,
@@ -525,7 +545,7 @@ export class ProjectRepository {
       sourceSizeBytes: inspectionResult.data.sourceSizeBytes,
       selectedRate: 1,
       leadInMs: DEFAULT_LEAD_IN_MS,
-      segments: createEmptySegments(),
+      practiceMarkers: createDefaultPracticeMarkers(mediaResult.data.durationMs),
     });
 
     const moveDirectory = this.layout.fileSystem.moveDirectory;
@@ -638,6 +658,67 @@ export class ProjectRepository {
     this.projects = sortProjects([...this.projects, project]);
     this.mediaStatusByProjectId.set(project.id, { state: 'ready', issues: [] });
     return cloneProject(project);
+  }
+
+  private async writeLegacyMigration(
+    destinationUri: string,
+    migratedProject: DanceProject,
+  ): Promise<void> {
+    const temporaryUri = this.layout.projectMetadataTempUri(migratedProject.id);
+    const backupUri = `${destinationUri}.bak`;
+    const legacyProject = await this.readValidatedJson(destinationUri, LegacyDanceProjectSchema);
+    if (legacyProject === null || legacyProject.id !== migratedProject.id) {
+      throw new ProjectRepositoryError(
+        'E_PROJECT_METADATA_CORRUPT',
+        'The legacy project metadata changed before migration.',
+      );
+    }
+
+    await this.writeValidatedTemporaryJson(
+      temporaryUri,
+      migratedProject,
+      DanceProjectSchema,
+      'migrated project metadata',
+    );
+    await this.layout.fileSystem.copyFile(destinationUri, backupUri);
+    const backup = await this.readValidatedJson(backupUri, LegacyDanceProjectSchema);
+    if (backup === null || JSON.stringify(backup) !== JSON.stringify(legacyProject)) {
+      throw new ProjectRepositoryError(
+        'E_PROJECT_METADATA_CORRUPT',
+        'The legacy project backup failed validation.',
+      );
+    }
+
+    try {
+      const committed = await this.promoteValidatedTemporaryJson(
+        temporaryUri,
+        destinationUri,
+        DanceProjectSchema,
+        'migrated project metadata',
+      );
+      if (JSON.stringify(committed) !== JSON.stringify(migratedProject)) {
+        throw new ProjectRepositoryError(
+          'E_PROJECT_METADATA_CORRUPT',
+          'The migrated project metadata does not match the intended value.',
+        );
+      }
+      this.deleteFileBestEffort(backupUri);
+    } catch (error) {
+      try {
+        await this.layout.fileSystem.copyFile(backupUri, destinationUri);
+      } catch {
+        // The validation below reports a failed rollback without hiding the original failure.
+      }
+      const restored = await this.readValidatedJson(destinationUri, LegacyDanceProjectSchema);
+      if (restored === null || JSON.stringify(restored) !== JSON.stringify(legacyProject)) {
+        throw new ProjectRepositoryError(
+          'E_PROJECT_METADATA_CORRUPT',
+          'The legacy project migration failed and its backup could not be restored.',
+          { cause: error },
+        );
+      }
+      throw error;
+    }
   }
 
   private updateProject(

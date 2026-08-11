@@ -19,7 +19,10 @@ interface ProjectStoreState {
   getProject: (projectId: string) => DanceProject | null;
   getMediaStatus: (projectId: string) => ProjectMediaStatus | null;
   renameProject: (projectId: string, name: string) => Promise<void>;
-  updateSegments: (projectId: string, segments: DanceProject['segments']) => Promise<void>;
+  updatePracticeMarkers: (
+    projectId: string,
+    practiceMarkers: DanceProject['practiceMarkers'],
+  ) => Promise<void>;
   updateSelectedRate: (projectId: string, selectedRate: PlaybackRate) => Promise<void>;
   updateLeadInMs: (projectId: string, leadInMs: LeadInMs) => Promise<void>;
   deleteProject: (projectId: string) => Promise<void>;
@@ -142,8 +145,12 @@ export const useProjectStore = create<ProjectStoreState>((set, get) => ({
   renameProject: async (projectId, name) =>
     runProjectMutation(projectId, () => projectRepository.rename(projectId, name), set),
 
-  updateSegments: async (projectId, segments) =>
-    runProjectMutation(projectId, () => projectRepository.updateSegments(projectId, segments), set),
+  updatePracticeMarkers: async (projectId, practiceMarkers) =>
+    runProjectMutation(
+      projectId,
+      () => projectRepository.updatePracticeMarkers(projectId, practiceMarkers),
+      set,
+    ),
 
   updateSelectedRate: async (projectId, selectedRate) =>
     runProjectMutation(

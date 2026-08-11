@@ -1,116 +1,109 @@
-import type {
-  DanceSegment,
-  DanceSegments,
-  SegmentIndex,
-  SegmentValidationIssue,
-} from '@/domain/segment';
 import {
-  SEGMENT_IDS,
-  SEGMENT_INDEXES,
-  areSegmentsValid,
-  getSegmentValidationIssue,
+  PRACTICE_MARKER_IDS,
+  getPracticeMarkersValidationIssue,
+  type PracticeMarkerId,
+  type PracticeMarkers,
+  type PracticeMarkersValidationIssue,
 } from '@/domain/segment';
 import { clampTimeMs } from '@/utils/time';
 
-export type SegmentEndpoint = 'startMs' | 'endMs';
-
-export function createSegmentDraft(segments: readonly DanceSegment[]): DanceSegments {
-  if (segments.length !== SEGMENT_INDEXES.length) {
-    throw new Error('A segment draft requires exactly nine rows.');
-  }
-
-  return SEGMENT_INDEXES.map((index) => {
-    const segment = segments[index];
-    if (segment === undefined || segment.index !== index || segment.id !== SEGMENT_IDS[index]) {
-      throw new Error('Segment draft rows must use the fixed segment IDs in index order.');
-    }
-
-    return {
-      id: segment.id,
-      index,
-      startMs: segment.startMs,
-      endMs: segment.endMs,
-    };
-  }) as DanceSegments;
+function replacePracticeStart(
+  startMs: PracticeMarkers['startMs'],
+  index: number,
+  value: number | null,
+): PracticeMarkers['startMs'] {
+  return [
+    index === 0 ? value : startMs[0],
+    index === 1 ? value : startMs[1],
+    index === 2 ? value : startMs[2],
+    index === 3 ? value : startMs[3],
+    index === 4 ? value : startMs[4],
+    index === 5 ? value : startMs[5],
+  ];
 }
 
-export function segmentDraftsEqual(
-  left: readonly DanceSegment[],
-  right: readonly DanceSegment[],
-): boolean {
-  return (
-    left.length === SEGMENT_INDEXES.length &&
-    right.length === SEGMENT_INDEXES.length &&
-    SEGMENT_INDEXES.every((index) => {
-      const leftSegment = left[index];
-      const rightSegment = right[index];
+export function createPracticeMarkerDraft(markers: PracticeMarkers): PracticeMarkers {
+  return {
+    startMs: [...markers.startMs] as PracticeMarkers['startMs'],
+    finalEndMs: markers.finalEndMs,
+  };
+}
 
-      return (
-        leftSegment?.id === SEGMENT_IDS[index] &&
-        leftSegment.index === index &&
-        rightSegment?.id === SEGMENT_IDS[index] &&
-        rightSegment.index === index &&
-        leftSegment.startMs === rightSegment.startMs &&
-        leftSegment.endMs === rightSegment.endMs
-      );
-    })
+export function practiceMarkerDraftsEqual(left: PracticeMarkers, right: PracticeMarkers): boolean {
+  return (
+    left.finalEndMs === right.finalEndMs &&
+    left.startMs.every((value, index) => value === right.startMs[index])
   );
 }
 
-function replaceSegment(
-  draft: DanceSegments,
-  segmentIndex: SegmentIndex,
-  replacement: DanceSegment,
-): DanceSegments {
-  return draft.map((segment) =>
-    segment.index === segmentIndex ? { ...replacement } : { ...segment },
-  ) as DanceSegments;
+export function getDraftMarkerValue(
+  draft: PracticeMarkers,
+  markerId: PracticeMarkerId,
+): number | null {
+  if (markerId === 'final-end') {
+    return draft.finalEndMs;
+  }
+
+  const startIndex = PRACTICE_MARKER_IDS.indexOf(markerId);
+  if (startIndex < 0 || startIndex >= draft.startMs.length) {
+    throw new Error('The requested practice marker does not exist.');
+  }
+
+  return draft.startMs[startIndex] ?? null;
 }
 
-export function setDraftEndpoint(
-  draft: DanceSegments,
-  segmentIndex: SegmentIndex,
-  endpoint: SegmentEndpoint,
+export function setDraftMarker(
+  draft: PracticeMarkers,
+  markerId: PracticeMarkerId,
   currentTimeMs: number,
   durationMs: number,
-): DanceSegments {
-  const segment = draft[segmentIndex];
-  if (segment === undefined || segment.index !== segmentIndex) {
-    throw new Error('The requested segment row does not exist.');
+): PracticeMarkers {
+  const nextValueMs = clampTimeMs(currentTimeMs, durationMs);
+  const next = createPracticeMarkerDraft(draft);
+
+  if (markerId === 'final-end') {
+    return { ...next, finalEndMs: nextValueMs };
   }
 
-  const currentIntegerMs = clampTimeMs(currentTimeMs, durationMs);
-
-  return replaceSegment(draft, segmentIndex, {
-    ...segment,
-    [endpoint]: currentIntegerMs,
-  });
-}
-
-export function clearDraftSegment(draft: DanceSegments, segmentIndex: SegmentIndex): DanceSegments {
-  const segment = draft[segmentIndex];
-  if (segment === undefined || segment.index !== segmentIndex) {
-    throw new Error('The requested segment row does not exist.');
+  const startIndex = PRACTICE_MARKER_IDS.indexOf(markerId);
+  if (startIndex < 0 || startIndex >= next.startMs.length) {
+    throw new Error('The requested practice marker does not exist.');
   }
 
-  return replaceSegment(draft, segmentIndex, {
-    id: segment.id,
-    index: segment.index,
-    startMs: null,
-    endMs: null,
-  });
+  return {
+    ...next,
+    startMs: replacePracticeStart(next.startMs, startIndex, nextValueMs),
+  };
 }
 
-export function getDraftSegmentIssue(
-  segment: DanceSegment,
-  durationMs: number,
-): SegmentValidationIssue | null {
-  return getSegmentValidationIssue(segment, durationMs);
+export function clearDraftMarker(
+  draft: PracticeMarkers,
+  markerId: PracticeMarkerId,
+): PracticeMarkers {
+  const next = createPracticeMarkerDraft(draft);
+
+  if (markerId === 'final-end') {
+    return { ...next, finalEndMs: null };
+  }
+
+  const startIndex = PRACTICE_MARKER_IDS.indexOf(markerId);
+  if (startIndex < 0 || startIndex >= next.startMs.length) {
+    throw new Error('The requested practice marker does not exist.');
+  }
+
+  return {
+    ...next,
+    startMs: replacePracticeStart(next.startMs, startIndex, null),
+  };
 }
 
-export function isSegmentDraftSavable(
-  draft: readonly DanceSegment[],
+export function getPracticeMarkerDraftIssue(
+  draft: PracticeMarkers,
   durationMs: number,
-): draft is DanceSegments {
-  return areSegmentsValid(draft, durationMs);
+): PracticeMarkersValidationIssue | null {
+  return getPracticeMarkersValidationIssue(draft, durationMs);
+}
+
+export function isPracticeMarkerDraftSavable(draft: PracticeMarkers, durationMs: number): boolean {
+  return getPracticeMarkerDraftIssue(draft, durationMs) === null;
 }

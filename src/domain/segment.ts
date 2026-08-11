@@ -1,5 +1,272 @@
-import { SEGMENT_COUNT } from '@/constants/app';
+import { LEGACY_SEGMENT_COUNT } from '@/constants/app';
 
+export const PRACTICE_START_INDEXES = [0, 1, 2, 3, 4, 5] as const;
+export const PRACTICE_MARKER_IDS = [
+  'start-1',
+  'start-2',
+  'start-3',
+  'start-4',
+  'start-5',
+  'start-6',
+  'final-end',
+] as const;
+
+export type PracticeStartIndex = (typeof PRACTICE_START_INDEXES)[number];
+export type PracticeMarkerId = (typeof PRACTICE_MARKER_IDS)[number];
+export type PracticeStartTimes = readonly [
+  number | null,
+  number | null,
+  number | null,
+  number | null,
+  number | null,
+  number | null,
+];
+
+export interface PracticeMarkers {
+  readonly startMs: PracticeStartTimes;
+  readonly finalEndMs: number | null;
+}
+
+export type PracticeMarkersValidationIssueCode =
+  | 'START_1_REQUIRED'
+  | 'START_GAP'
+  | 'FINAL_END_REQUIRED'
+  | 'NON_INTEGER'
+  | 'OUT_OF_BOUNDS'
+  | 'NOT_STRICTLY_INCREASING';
+
+export interface PracticeMarkersValidationIssue {
+  code: PracticeMarkersValidationIssueCode;
+  markerId: PracticeMarkerId;
+}
+
+export function createEmptyPracticeMarkers(): PracticeMarkers {
+  return {
+    startMs: [null, null, null, null, null, null],
+    finalEndMs: null,
+  };
+}
+
+export function createDefaultPracticeMarkers(durationMs: number): PracticeMarkers {
+  if (!Number.isInteger(durationMs) || durationMs <= 0) {
+    throw new Error('A positive integer duration is required for default practice markers.');
+  }
+
+  return {
+    startMs: [0, null, null, null, null, null],
+    finalEndMs: durationMs,
+  };
+}
+
+export function clonePracticeMarkers(markers: PracticeMarkers): PracticeMarkers {
+  return {
+    startMs: [...markers.startMs] as PracticeStartTimes,
+    finalEndMs: markers.finalEndMs,
+  };
+}
+
+export function practiceMarkerIdForStart(index: PracticeStartIndex): PracticeMarkerId {
+  return PRACTICE_MARKER_IDS[index];
+}
+
+function firstInvalidNumber(
+  markers: PracticeMarkers,
+  durationMs: number,
+): PracticeMarkersValidationIssue | null {
+  const values: readonly (readonly [PracticeMarkerId, number | null])[] = [
+    ...PRACTICE_START_INDEXES.map(
+      (index) => [practiceMarkerIdForStart(index), markers.startMs[index]] as const,
+    ),
+    ['final-end', markers.finalEndMs],
+  ];
+
+  for (const [markerId, value] of values) {
+    if (value === null) {
+      continue;
+    }
+    if (!Number.isFinite(value) || !Number.isInteger(value)) {
+      return { code: 'NON_INTEGER', markerId };
+    }
+    if (value < 0 || value > durationMs) {
+      return { code: 'OUT_OF_BOUNDS', markerId };
+    }
+  }
+
+  return null;
+}
+
+export function getPracticeMarkersValidationIssue(
+  markers: PracticeMarkers,
+  durationMs: number,
+): PracticeMarkersValidationIssue | null {
+  const numericIssue = firstInvalidNumber(markers, durationMs);
+  if (numericIssue !== null) {
+    return numericIssue;
+  }
+
+  if (markers.startMs[0] === null) {
+    return { code: 'START_1_REQUIRED', markerId: 'start-1' };
+  }
+
+  let configuredCount = 0;
+  while (
+    configuredCount < PRACTICE_START_INDEXES.length &&
+    markers.startMs[configuredCount] !== null
+  ) {
+    configuredCount += 1;
+  }
+
+  for (let index = configuredCount + 1; index < PRACTICE_START_INDEXES.length; index += 1) {
+    if (markers.startMs[index] !== null) {
+      return {
+        code: 'START_GAP',
+        markerId: practiceMarkerIdForStart(configuredCount as PracticeStartIndex),
+      };
+    }
+  }
+
+  if (markers.finalEndMs === null) {
+    return { code: 'FINAL_END_REQUIRED', markerId: 'final-end' };
+  }
+
+  for (let index = 1; index < configuredCount; index += 1) {
+    const previous = markers.startMs[index - 1];
+    const current = markers.startMs[index];
+    if (previous === null || current === null || current <= previous) {
+      return {
+        code: 'NOT_STRICTLY_INCREASING',
+        markerId: practiceMarkerIdForStart(index as PracticeStartIndex),
+      };
+    }
+  }
+
+  const lastStart = markers.startMs[configuredCount - 1];
+  if (lastStart === null || markers.finalEndMs <= lastStart) {
+    return { code: 'NOT_STRICTLY_INCREASING', markerId: 'final-end' };
+  }
+
+  return null;
+}
+
+export function isPracticeMarkersValid(markers: PracticeMarkers, durationMs: number): boolean {
+  return (
+    Number.isInteger(durationMs) &&
+    durationMs > 0 &&
+    getPracticeMarkersValidationIssue(markers, durationMs) === null
+  );
+}
+
+export const PRACTICE_RANGE_INDEXES = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] as const;
+export const PRACTICE_RANGE_IDS = [
+  'range-1',
+  'range-2',
+  'range-1-2',
+  'range-3',
+  'range-4',
+  'range-3-4',
+  'range-5',
+  'range-6',
+  'range-5-6',
+  'range-1-4',
+  'range-3-6',
+  'range-1-6',
+] as const;
+
+export type PracticeRangeIndex = (typeof PRACTICE_RANGE_INDEXES)[number];
+export type PracticeRangeId = (typeof PRACTICE_RANGE_IDS)[number];
+export type PracticeRangeLabel =
+  '1' | '2' | '1-2' | '3' | '4' | '3-4' | '5' | '6' | '5-6' | '1-4' | '3-6' | '1-6';
+
+export interface PracticeRangeDefinition {
+  index: PracticeRangeIndex;
+  id: PracticeRangeId;
+  label: PracticeRangeLabel;
+  firstPart: 1 | 2 | 3 | 4 | 5 | 6;
+  lastPart: 1 | 2 | 3 | 4 | 5 | 6;
+}
+
+export const PRACTICE_RANGE_DEFINITIONS = [
+  { index: 0, id: 'range-1', label: '1', firstPart: 1, lastPart: 1 },
+  { index: 1, id: 'range-2', label: '2', firstPart: 2, lastPart: 2 },
+  { index: 2, id: 'range-1-2', label: '1-2', firstPart: 1, lastPart: 2 },
+  { index: 3, id: 'range-3', label: '3', firstPart: 3, lastPart: 3 },
+  { index: 4, id: 'range-4', label: '4', firstPart: 4, lastPart: 4 },
+  { index: 5, id: 'range-3-4', label: '3-4', firstPart: 3, lastPart: 4 },
+  { index: 6, id: 'range-5', label: '5', firstPart: 5, lastPart: 5 },
+  { index: 7, id: 'range-6', label: '6', firstPart: 6, lastPart: 6 },
+  { index: 8, id: 'range-5-6', label: '5-6', firstPart: 5, lastPart: 6 },
+  { index: 9, id: 'range-1-4', label: '1-4', firstPart: 1, lastPart: 4 },
+  { index: 10, id: 'range-3-6', label: '3-6', firstPart: 3, lastPart: 6 },
+  { index: 11, id: 'range-1-6', label: '1-6', firstPart: 1, lastPart: 6 },
+] as const satisfies readonly PracticeRangeDefinition[];
+
+export interface PracticeRange {
+  index: PracticeRangeIndex;
+  id: PracticeRangeId;
+  label: PracticeRangeLabel;
+  startMs: number | null;
+  endMs: number | null;
+}
+
+export type ConfiguredPracticeRange = PracticeRange & {
+  startMs: number;
+  endMs: number;
+};
+
+export type PracticeRanges = [
+  PracticeRange,
+  PracticeRange,
+  PracticeRange,
+  PracticeRange,
+  PracticeRange,
+  PracticeRange,
+  PracticeRange,
+  PracticeRange,
+  PracticeRange,
+  PracticeRange,
+  PracticeRange,
+  PracticeRange,
+];
+
+export function derivePracticeRanges(markers: PracticeMarkers, durationMs: number): PracticeRanges {
+  const valid = isPracticeMarkersValid(markers, durationMs);
+  const configuredCount = valid ? markers.startMs.findIndex((value) => value === null) : 0;
+  const partCount = configuredCount === -1 ? PRACTICE_START_INDEXES.length : configuredCount;
+
+  return PRACTICE_RANGE_DEFINITIONS.map((definition) => {
+    if (!valid || definition.lastPart > partCount) {
+      return { ...definition, startMs: null, endMs: null };
+    }
+
+    const startMs = markers.startMs[definition.firstPart - 1];
+    const endMs =
+      definition.lastPart === partCount
+        ? markers.finalEndMs
+        : markers.startMs[definition.lastPart as PracticeStartIndex];
+
+    return {
+      ...definition,
+      startMs,
+      endMs,
+    };
+  }) as unknown as PracticeRanges;
+}
+
+export function isPracticeRangeConfigured(range: PracticeRange): range is ConfiguredPracticeRange {
+  return (
+    range.startMs !== null &&
+    range.endMs !== null &&
+    Number.isInteger(range.startMs) &&
+    Number.isInteger(range.endMs) &&
+    range.startMs >= 0 &&
+    range.startMs < range.endMs
+  );
+}
+
+/*
+ * Schema-v1 persisted projects used nine independent ranges. These exports are
+ * retained only so the validated migration can recognize that exact format.
+ */
 export const SEGMENT_INDEXES = [0, 1, 2, 3, 4, 5, 6, 7, 8] as const;
 export const SEGMENT_IDS = [
   'segment-1',
@@ -35,11 +302,7 @@ export type DanceSegments = [
   DanceSegment,
 ];
 
-export type ConfiguredDanceSegment = DanceSegment & {
-  startMs: number;
-  endMs: number;
-};
-
+export type ConfiguredDanceSegment = DanceSegment & { startMs: number; endMs: number };
 export type SegmentValidationIssue =
   'PARTIAL' | 'NON_INTEGER' | 'OUT_OF_BOUNDS' | 'START_NOT_BEFORE_END';
 
@@ -60,14 +323,8 @@ export function getSegmentValidationIssue(
   segment: DanceSegment,
   durationMs: number,
 ): SegmentValidationIssue | null {
-  if (isSegmentUnset(segment)) {
-    return null;
-  }
-
-  if (segment.startMs === null || segment.endMs === null) {
-    return 'PARTIAL';
-  }
-
+  if (isSegmentUnset(segment)) return null;
+  if (segment.startMs === null || segment.endMs === null) return 'PARTIAL';
   if (
     !Number.isInteger(segment.startMs) ||
     !Number.isInteger(segment.endMs) ||
@@ -75,16 +332,10 @@ export function getSegmentValidationIssue(
   ) {
     return 'NON_INTEGER';
   }
-
   if (durationMs < 0 || segment.startMs < 0 || segment.endMs > durationMs) {
     return 'OUT_OF_BOUNDS';
   }
-
-  if (segment.startMs >= segment.endMs) {
-    return 'START_NOT_BEFORE_END';
-  }
-
-  return null;
+  return segment.startMs < segment.endMs ? null : 'START_NOT_BEFORE_END';
 }
 
 export function isSegmentConfigured(
@@ -103,7 +354,7 @@ export function areSegmentsValid(
   durationMs: number,
 ): segments is DanceSegments {
   return (
-    segments.length === SEGMENT_COUNT &&
+    segments.length === LEGACY_SEGMENT_COUNT &&
     SEGMENT_INDEXES.every(
       (index) =>
         segments[index]?.index === index &&

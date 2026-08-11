@@ -21,18 +21,19 @@ import { COPY } from '@/constants/copy';
 import { colors, fontSizes, fontWeights, spacing } from '@/constants/theme';
 import type { DanceProject, StoredWaveform } from '@/domain/project';
 import {
-  SEGMENT_INDEXES,
-  getSegmentValidationIssue,
-  type DanceSegments,
-  type SegmentIndex,
+  PRACTICE_MARKER_IDS,
+  type PracticeMarkerId,
+  type PracticeMarkers,
+  type PracticeMarkersValidationIssue,
 } from '@/domain/segment';
 import {
-  clearDraftSegment,
-  createSegmentDraft,
-  isSegmentDraftSavable,
-  segmentDraftsEqual,
-  setDraftEndpoint,
-  type SegmentEndpoint,
+  clearDraftMarker,
+  createPracticeMarkerDraft,
+  getDraftMarkerValue,
+  getPracticeMarkerDraftIssue,
+  isPracticeMarkerDraftSavable,
+  practiceMarkerDraftsEqual,
+  setDraftMarker,
 } from '@/domain/segmentDraft';
 import { useTempoLoopPlayer } from '@/playback/useTempoLoopPlayer';
 import { projectRepository } from '@/repositories/ProjectRepository';
@@ -44,8 +45,7 @@ import { navigateBackOrHome } from '@/utils/navigation';
 import { formatEditorTime } from '@/utils/time';
 
 type EditorConfirmation = {
-  readonly segmentIndex: SegmentIndex;
-  readonly endpoint: SegmentEndpoint;
+  readonly markerId: PracticeMarkerId;
 };
 
 type WaveformLoadState =
@@ -62,11 +62,33 @@ function firstParam(value: string | string[] | undefined): string | null {
   return first !== undefined && first.length > 0 ? first : null;
 }
 
-function firstInvalidSegmentIndex(draft: DanceSegments, durationMs: number): SegmentIndex | null {
-  return (
-    SEGMENT_INDEXES.find((index) => getSegmentValidationIssue(draft[index], durationMs) !== null) ??
-    null
-  );
+function markerRowIndex(markerId: PracticeMarkerId): number {
+  return PRACTICE_MARKER_IDS.indexOf(markerId);
+}
+
+function markerLabel(markerId: PracticeMarkerId): string {
+  if (markerId === 'final-end') {
+    return COPY.segmentEditor.finalEndMarkerLabel;
+  }
+
+  return COPY.segmentEditor.startMarkerLabel(markerRowIndex(markerId) + 1);
+}
+
+function markerValidationMessage(issue: PracticeMarkersValidationIssue): string {
+  switch (issue.code) {
+    case 'START_1_REQUIRED':
+      return COPY.segmentEditor.startOneRequiredError;
+    case 'START_GAP':
+      return COPY.segmentEditor.startGapError;
+    case 'FINAL_END_REQUIRED':
+      return COPY.segmentEditor.finalEndRequiredError;
+    case 'NON_INTEGER':
+      return COPY.segmentEditor.nonIntegerError;
+    case 'OUT_OF_BOUNDS':
+      return COPY.segmentEditor.outOfBoundsError;
+    case 'NOT_STRICTLY_INCREASING':
+      return COPY.segmentEditor.orderError;
+  }
 }
 
 function isEditorAudioReady(
@@ -93,13 +115,18 @@ function SegmentEditorContent({ project, audioUri, cameFromPractice }: SegmentEd
   const player = useTempoLoopPlayer();
   const playerRef = useRef(player);
 
-  const updateSegments = useProjectStore((state) => state.updateSegments);
+  const updatePracticeMarkers = useProjectStore((state) => state.updatePracticeMarkers);
   const pendingProjectId = useProjectStore((state) => state.pendingProjectId);
 
-  const [baseline] = useState<DanceSegments>(() => createSegmentDraft(project.segments));
-  const [draft, setDraft] = useState<DanceSegments>(() => createSegmentDraft(project.segments));
+  const [baseline] = useState<PracticeMarkers>(() =>
+    createPracticeMarkerDraft(project.practiceMarkers),
+  );
+  const [draft, setDraft] = useState<PracticeMarkers>(() =>
+    createPracticeMarkerDraft(project.practiceMarkers),
+  );
   const [confirmation, setConfirmation] = useState<EditorConfirmation | null>(null);
-  const [highlightedInvalidIndex, setHighlightedInvalidIndex] = useState<SegmentIndex | null>(null);
+  const [highlightedInvalidMarkerId, setHighlightedInvalidMarkerId] =
+    useState<PracticeMarkerId | null>(null);
   const [waveformState, setWaveformState] = useState<WaveformLoadState>({
     status: 'loading',
     waveform: null,
@@ -117,8 +144,9 @@ function SegmentEditorContent({ project, audioUri, cameFromPractice }: SegmentEd
   const routeFocusedRef = useRef(false);
   const scrubWasPlayingRef = useRef(false);
 
-  const isDirty = !segmentDraftsEqual(draft, baseline);
-  const draftIsSavable = isSegmentDraftSavable(draft, project.durationMs);
+  const validationIssue = getPracticeMarkerDraftIssue(draft, project.durationMs);
+  const isDirty = !practiceMarkerDraftsEqual(draft, baseline);
+  const draftIsSavable = isPracticeMarkerDraftSavable(draft, project.durationMs);
   const projectPending = pendingProjectId === project.id;
   const audioIsReady = isEditorAudioReady(
     project.id,
@@ -191,8 +219,9 @@ function SegmentEditorContent({ project, audioUri, cameFromPractice }: SegmentEd
     };
   }, [project]);
 
-  const focusInvalidSegment = useCallback((index: SegmentIndex) => {
-    setHighlightedInvalidIndex(index);
+  const focusInvalidMarker = useCallback((markerId: PracticeMarkerId) => {
+    const index = markerRowIndex(markerId);
+    setHighlightedInvalidMarkerId(markerId);
     const offset = rowOffsets.current[index];
     if (offset !== undefined) {
       scrollViewRef.current?.scrollTo({ y: Math.max(0, offset - spacing.md), animated: true });
@@ -243,7 +272,7 @@ function SegmentEditorContent({ project, audioUri, cameFromPractice }: SegmentEd
     }
 
     discardAlertOpenRef.current = true;
-    const invalidDraft = !isSegmentDraftSavable(draft, project.durationMs);
+    const invalidDraft = !isPracticeMarkerDraftSavable(draft, project.durationMs);
     Alert.alert(
       invalidDraft ? COPY.segmentEditor.invalidDiscardTitle : COPY.segmentEditor.discardTitle,
       invalidDraft ? COPY.segmentEditor.invalidDiscardMessage : COPY.segmentEditor.discardMessage,
@@ -273,38 +302,36 @@ function SegmentEditorContent({ project, audioUri, cameFromPractice }: SegmentEd
     );
   });
 
-  const handleSetEndpoint = useCallback(
-    (segmentIndex: SegmentIndex, endpoint: SegmentEndpoint) => {
+  const handleSetMarker = useCallback(
+    (markerId: PracticeMarkerId) => {
       if (interactionDisabled) {
         return;
       }
 
       const currentTimeMs = playerRef.current.getCurrentPositionMs();
       setDraft((current) => {
-        const next = setDraftEndpoint(
-          current,
-          segmentIndex,
-          endpoint,
-          currentTimeMs,
-          project.durationMs,
+        const next = setDraftMarker(current, markerId, currentTimeMs, project.durationMs);
+        setHighlightedInvalidMarkerId(
+          getPracticeMarkerDraftIssue(next, project.durationMs)?.markerId ?? null,
         );
-        setHighlightedInvalidIndex(firstInvalidSegmentIndex(next, project.durationMs));
         return next;
       });
-      setConfirmation({ segmentIndex, endpoint });
+      setConfirmation({ markerId });
     },
     [interactionDisabled, project.durationMs],
   );
 
-  const handleClearSegment = useCallback(
-    (segmentIndex: SegmentIndex) => {
+  const handleClearMarker = useCallback(
+    (markerId: PracticeMarkerId) => {
       if (isSaving || isExiting || projectPending) {
         return;
       }
 
       setDraft((current) => {
-        const next = clearDraftSegment(current, segmentIndex);
-        setHighlightedInvalidIndex(firstInvalidSegmentIndex(next, project.durationMs));
+        const next = clearDraftMarker(current, markerId);
+        setHighlightedInvalidMarkerId(
+          getPracticeMarkerDraftIssue(next, project.durationMs)?.markerId ?? null,
+        );
         return next;
       });
       setConfirmation(null);
@@ -360,10 +387,10 @@ function SegmentEditorContent({ project, audioUri, cameFromPractice }: SegmentEd
       return;
     }
 
-    const frozenDraft = createSegmentDraft(draft);
-    const invalidIndex = firstInvalidSegmentIndex(frozenDraft, project.durationMs);
-    if (invalidIndex !== null || !isSegmentDraftSavable(frozenDraft, project.durationMs)) {
-      focusInvalidSegment(invalidIndex ?? 0);
+    const frozenDraft = createPracticeMarkerDraft(draft);
+    const invalidIssue = getPracticeMarkerDraftIssue(frozenDraft, project.durationMs);
+    if (invalidIssue !== null || !isPracticeMarkerDraftSavable(frozenDraft, project.durationMs)) {
+      focusInvalidMarker(invalidIssue?.markerId ?? 'start-1');
       return;
     }
 
@@ -372,7 +399,7 @@ function SegmentEditorContent({ project, audioUri, cameFromPractice }: SegmentEd
     setConfirmation(null);
     playerRef.current.pause();
 
-    void updateSegments(project.id, frozenDraft)
+    void updatePracticeMarkers(project.id, frozenDraft)
       .then(() => {
         playerRef.current.deactivate();
         allowRemovalRef.current = true;
@@ -399,11 +426,11 @@ function SegmentEditorContent({ project, audioUri, cameFromPractice }: SegmentEd
   }, [
     cameFromPractice,
     draft,
-    focusInvalidSegment,
+    focusInvalidMarker,
     project.durationMs,
     project.id,
     projectPending,
-    updateSegments,
+    updatePracticeMarkers,
   ]);
 
   const handleRetryAudio = useCallback(() => {
@@ -529,30 +556,44 @@ function SegmentEditorContent({ project, audioUri, cameFromPractice }: SegmentEd
         testID="segment-editor-segment-scroll"
       >
         <View style={styles.segmentList}>
-          {draft.map((segment) => (
-            <View
-              key={segment.id}
-              onLayout={(event) => {
-                rowOffsets.current[segment.index] = event.nativeEvent.layout.y;
-              }}
-            >
-              <SegmentTimeRow
-                confirmedEndpoint={
-                  confirmation?.segmentIndex === segment.index ? confirmation.endpoint : null
-                }
-                disabled={isSaving || isExiting || projectPending}
-                durationMs={project.durationMs}
-                highlighted={highlightedInvalidIndex === segment.index}
-                onClear={() => handleClearSegment(segment.index)}
-                onSet={(endpoint) => handleSetEndpoint(segment.index, endpoint)}
-                ref={(node) => {
-                  rowRefs.current[segment.index] = node;
+          {PRACTICE_MARKER_IDS.map((markerId) => {
+            const rowIndex = markerRowIndex(markerId);
+            const label = markerLabel(markerId);
+            const timeMs = getDraftMarkerValue(draft, markerId);
+
+            return (
+              <View
+                key={markerId}
+                onLayout={(event) => {
+                  rowOffsets.current[rowIndex] = event.nativeEvent.layout.y;
                 }}
-                segment={segment}
-                setDisabled={!audioIsReady}
-              />
-            </View>
-          ))}
+              >
+                <SegmentTimeRow
+                  confirmation={
+                    confirmation?.markerId === markerId
+                      ? COPY.segmentEditor.markerConfirmation(label, formatEditorTime(timeMs))
+                      : null
+                  }
+                  disabled={isSaving || isExiting || projectPending}
+                  highlighted={highlightedInvalidMarkerId === markerId}
+                  label={label}
+                  markerId={markerId}
+                  onClear={() => handleClearMarker(markerId)}
+                  onSet={() => handleSetMarker(markerId)}
+                  ref={(node) => {
+                    rowRefs.current[rowIndex] = node;
+                  }}
+                  setDisabled={!audioIsReady}
+                  timeMs={timeMs}
+                  validationMessage={
+                    validationIssue?.markerId === markerId
+                      ? markerValidationMessage(validationIssue)
+                      : null
+                  }
+                />
+              </View>
+            );
+          })}
         </View>
       </ScrollView>
     </SafeAreaView>

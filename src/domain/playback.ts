@@ -1,5 +1,3 @@
-import type { DanceSegment } from '@/domain/segment';
-
 export const PLAYBACK_RATES = [1, 0.9, 0.8, 0.7, 0.6] as const;
 export const LEAD_IN_OPTIONS_MS = [0, 2_000, 4_000, 6_000, 8_000] as const;
 
@@ -39,14 +37,16 @@ export function isLeadInMs(value: number): value is LeadInMs {
   return LEAD_IN_OPTIONS_MS.some((leadInMs) => leadInMs === value);
 }
 
-export function calculatePlaybackRange(segment: DanceSegment, leadInMs: LeadInMs): PlaybackRange {
-  if (segment.startMs === null || segment.endMs === null) {
+export function calculatePlaybackRange<
+  TRange extends { readonly startMs: number | null; readonly endMs: number | null },
+>(range: TRange, leadInMs: LeadInMs): PlaybackRange {
+  if (range.startMs === null || range.endMs === null) {
     throw new Error('SEGMENT_NOT_CONFIGURED');
   }
 
   return {
-    playFromMs: Math.max(0, segment.startMs - leadInMs),
-    stopAtMs: segment.endMs,
-    countdownMs: Math.max(0, leadInMs - segment.startMs),
+    playFromMs: Math.max(0, range.startMs - leadInMs),
+    stopAtMs: range.endMs,
+    countdownMs: Math.max(0, leadInMs - range.startMs),
   };
 }

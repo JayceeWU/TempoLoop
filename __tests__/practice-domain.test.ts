@@ -2,14 +2,15 @@ import type { PlaybackSnapshot } from '@/domain/playback';
 import type { DanceProject } from '@/domain/project';
 import {
   canTogglePracticePlayback,
+  getConfiguredPracticeRange,
   getPracticePlaybackIntent,
-  selectInitialPracticeSegment,
+  selectInitialPracticeRange,
 } from '@/domain/practice';
-import { createEmptySegments } from '@/domain/segment';
+import { createDefaultPracticeMarkers, createEmptyPracticeMarkers } from '@/domain/segment';
 
 function createProject(overrides: Partial<DanceProject> = {}): DanceProject {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     id: 'project-1',
     name: 'Practice',
     createdAtIso: '2026-07-30T12:00:00.000Z',
@@ -21,7 +22,7 @@ function createProject(overrides: Partial<DanceProject> = {}): DanceProject {
     sourceDisplayName: null,
     sourceSizeBytes: null,
     selectedRate: 1,
-    segments: createEmptySegments(),
+    practiceMarkers: createDefaultPracticeMarkers(90_000),
     ...overrides,
     leadInMs: overrides.leadInMs ?? 6_000,
   };
@@ -42,30 +43,35 @@ const READY_SNAPSHOT: PlaybackSnapshot = {
 };
 
 describe('practice selection', () => {
-  it('always selects the first valid configured segment in display order', () => {
-    const segments = createEmptySegments();
-    segments[0] = { ...segments[0], startMs: 1_000, endMs: 2_000 };
-    segments[2] = { ...segments[2], startMs: 12_000, endMs: 20_000 };
+  it('selects the first derived range in display order', () => {
+    const practiceMarkers = {
+      startMs: [1_000, 12_000, null, null, null, null] as const,
+      finalEndMs: 20_000,
+    };
 
-    expect(selectInitialPracticeSegment(createProject({ segments }))).toBe(0);
+    expect(selectInitialPracticeRange(createProject({ practiceMarkers }))).toBe(0);
   });
 
-  it('skips incomplete rows and selects the first fully valid segment', () => {
-    const segments = createEmptySegments();
-    segments[0] = { ...segments[0], startMs: 1_000, endMs: null };
-    segments[1] = { ...segments[1], startMs: 12_000, endMs: 20_000 };
-    segments[2] = { ...segments[2], startMs: 22_000, endMs: 30_000 };
+  it('returns the exact derived range for a configured selection', () => {
+    const project = createProject({
+      practiceMarkers: {
+        startMs: [1_000, 12_000, null, null, null, null],
+        finalEndMs: 20_000,
+      },
+    });
 
-    expect(selectInitialPracticeSegment(createProject({ segments }))).toBe(1);
+    expect(getConfiguredPracticeRange(project, 2)).toMatchObject({
+      label: '1-2',
+      startMs: 1_000,
+      endMs: 20_000,
+    });
   });
 
-  it('returns none when no segment is fully valid', () => {
-    const segments = createEmptySegments();
-    segments[0] = { ...segments[0], startMs: 1_000, endMs: null };
-    segments[1] = { ...segments[1], startMs: null, endMs: 2_000 };
-    segments[2] = { ...segments[2], startMs: 3_000, endMs: 3_000 };
+  it('returns none when the continuous marker configuration is invalid', () => {
+    const practiceMarkers = createEmptyPracticeMarkers();
 
-    expect(selectInitialPracticeSegment(createProject({ segments }))).toBeNull();
+    expect(selectInitialPracticeRange(createProject({ practiceMarkers }))).toBeNull();
+    expect(getConfiguredPracticeRange(createProject({ practiceMarkers }), 0)).toBeNull();
   });
 });
 

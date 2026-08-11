@@ -4,154 +4,81 @@ import { StyleSheet, Text, View } from 'react-native';
 import { AppButton } from '@/components/AppButton';
 import { COPY } from '@/constants/copy';
 import { colors, fontSizes, fontWeights, minimumTapSize, radii, spacing } from '@/constants/theme';
-import { segmentDisplayNumber, type DanceSegment } from '@/domain/segment';
-import { getDraftSegmentIssue, type SegmentEndpoint } from '@/domain/segmentDraft';
+import type { PracticeMarkerId } from '@/domain/segment';
 import { formatEditorTime } from '@/utils/time';
 
 export interface SegmentTimeRowProps {
-  readonly segment: DanceSegment;
-  readonly durationMs: number;
+  readonly markerId: PracticeMarkerId;
+  readonly label: string;
+  readonly timeMs: number | null;
   readonly disabled?: boolean;
   readonly setDisabled?: boolean;
   readonly highlighted?: boolean;
-  readonly confirmedEndpoint?: SegmentEndpoint | null;
-  readonly onSet: (endpoint: SegmentEndpoint) => void;
+  readonly confirmation?: string | null;
+  readonly validationMessage?: string | null;
+  readonly onSet: () => void;
   readonly onClear: () => void;
-}
-
-function validationMessage(segment: DanceSegment, durationMs: number): string | null {
-  const issue = getDraftSegmentIssue(segment, durationMs);
-
-  if (issue === 'PARTIAL') {
-    return COPY.segmentEditor.partialError;
-  }
-  if (issue === 'NON_INTEGER') {
-    return COPY.segmentEditor.nonIntegerError;
-  }
-  if (issue === 'OUT_OF_BOUNDS') {
-    return COPY.segmentEditor.outOfBoundsError;
-  }
-  if (issue === 'START_NOT_BEFORE_END') {
-    return COPY.segmentEditor.orderError;
-  }
-
-  return null;
-}
-
-interface EndpointControlProps {
-  readonly displayNumber: number;
-  readonly endpoint: 'start' | 'end';
-  readonly time: number | null;
-  readonly disabled: boolean;
-  readonly onPress: () => void;
-}
-
-function EndpointControl({
-  displayNumber,
-  endpoint,
-  time,
-  disabled,
-  onPress,
-}: EndpointControlProps) {
-  const label = endpoint === 'start' ? COPY.segmentEditor.start : COPY.segmentEditor.end;
-
-  return (
-    <View style={styles.endpointControl}>
-      <View style={styles.endpointValue}>
-        <Text numberOfLines={1} style={styles.endpointLabel}>
-          {label}
-        </Text>
-        <Text numberOfLines={1} style={styles.time}>
-          {formatEditorTime(time)}
-        </Text>
-      </View>
-      <AppButton
-        accessibilityLabel={COPY.segmentEditor.setEndpointAccessibilityLabel(
-          displayNumber,
-          endpoint,
-        )}
-        disabled={disabled}
-        label={COPY.common.set}
-        onPress={onPress}
-        size="compact"
-        style={styles.setButton}
-        variant="secondary"
-      />
-    </View>
-  );
 }
 
 export const SegmentTimeRow = forwardRef<Text, SegmentTimeRowProps>(function SegmentTimeRow(
   {
-    segment,
-    durationMs,
+    markerId,
+    label,
+    timeMs,
     disabled = false,
     setDisabled = false,
     highlighted = false,
-    confirmedEndpoint = null,
+    confirmation = null,
+    validationMessage = null,
     onSet,
     onClear,
   },
   ref,
 ) {
-  const issue = validationMessage(segment, durationMs);
-  const isEmpty = segment.startMs === null && segment.endMs === null;
-  const displayNumber = segmentDisplayNumber(segment.index);
-
   return (
     <View
       style={[styles.container, highlighted && styles.highlightedContainer]}
-      testID={`segment-time-row-${segment.index}`}
+      testID={`practice-marker-row-${markerId}`}
     >
-      <View style={styles.controlRow} testID={`segment-time-controls-${segment.index}`}>
-        <View
-          accessibilityLabel={COPY.segmentEditor.segmentLabel(displayNumber)}
-          accessible
-          style={styles.segmentBadge}
-        >
-          <Text ref={ref} style={styles.segmentNumber}>
-            {displayNumber}
+      <View style={styles.controlRow} testID={`practice-marker-controls-${markerId}`}>
+        <View accessible style={styles.markerValue} accessibilityLabel={label}>
+          <Text ref={ref} numberOfLines={1} style={styles.markerLabel}>
+            {label}
+          </Text>
+          <Text numberOfLines={1} style={styles.time}>
+            {formatEditorTime(timeMs)}
           </Text>
         </View>
 
-        <EndpointControl
-          disabled={disabled || setDisabled}
-          displayNumber={displayNumber}
-          endpoint="start"
-          onPress={() => onSet('startMs')}
-          time={segment.startMs}
-        />
-        <EndpointControl
-          disabled={disabled || setDisabled}
-          displayNumber={displayNumber}
-          endpoint="end"
-          onPress={() => onSet('endMs')}
-          time={segment.endMs}
-        />
-
         <AppButton
-          accessibilityLabel={COPY.segmentEditor.clearAccessibilityLabel(displayNumber)}
-          disabled={disabled || isEmpty}
-          label="×"
+          accessibilityLabel={COPY.segmentEditor.setMarkerAccessibilityLabel(label)}
+          disabled={disabled || setDisabled}
+          label={COPY.common.set}
+          onPress={onSet}
+          size="compact"
+          style={styles.actionButton}
+          variant="secondary"
+        />
+        <AppButton
+          accessibilityLabel={COPY.segmentEditor.clearMarkerAccessibilityLabel(label)}
+          disabled={disabled || timeMs === null}
+          label={COPY.common.clear}
           onPress={onClear}
           size="compact"
-          style={styles.clearButton}
+          style={styles.actionButton}
           variant="ghost"
         />
       </View>
 
-      {confirmedEndpoint !== null ? (
+      {confirmation !== null ? (
         <Text accessibilityLiveRegion="polite" style={styles.liveConfirmation}>
-          {COPY.segmentEditor.endpointConfirmation(
-            confirmedEndpoint === 'startMs' ? 'Start' : 'End',
-            formatEditorTime(segment[confirmedEndpoint]),
-          )}
+          {confirmation}
         </Text>
       ) : null}
 
-      {issue !== null ? (
+      {validationMessage !== null ? (
         <Text accessibilityRole="alert" style={styles.error}>
-          {issue}
+          {validationMessage}
         </Text>
       ) : null}
     </View>
@@ -173,57 +100,26 @@ const styles = StyleSheet.create({
   controlRow: {
     alignItems: 'center',
     flexDirection: 'row',
-    gap: spacing.xxs,
+    gap: spacing.xs,
   },
-  segmentBadge: {
-    alignItems: 'center',
-    backgroundColor: colors.accentSoft,
-    borderColor: colors.accent,
-    borderRadius: radii.pill,
-    borderWidth: StyleSheet.hairlineWidth,
-    height: 32,
-    justifyContent: 'center',
-    width: 32,
-  },
-  segmentNumber: {
-    color: colors.text,
-    fontSize: fontSizes.body,
-    fontWeight: fontWeights.bold,
-  },
-  endpointControl: {
-    alignItems: 'center',
-    flex: 1,
-    flexDirection: 'row',
-    gap: spacing.xxs,
-    minWidth: 0,
-  },
-  endpointValue: {
-    alignItems: 'center',
+  markerValue: {
     flex: 1,
     minWidth: 0,
   },
-  endpointLabel: {
-    alignSelf: 'stretch',
+  markerLabel: {
     color: colors.textMuted,
-    fontSize: 11,
-    textAlign: 'center',
+    fontSize: fontSizes.caption,
   },
   time: {
-    alignSelf: 'stretch',
     color: colors.text,
-    fontSize: fontSizes.caption,
+    fontSize: fontSizes.body,
     fontVariant: ['tabular-nums'],
-    fontWeight: fontWeights.medium,
-    textAlign: 'center',
+    fontWeight: fontWeights.semibold,
   },
-  setButton: {
-    minWidth: minimumTapSize,
-    paddingHorizontal: spacing.xxs,
-  },
-  clearButton: {
+  actionButton: {
     minHeight: minimumTapSize,
-    minWidth: minimumTapSize,
-    paddingHorizontal: spacing.xxs,
+    minWidth: 72,
+    paddingHorizontal: spacing.xs,
   },
   liveConfirmation: {
     height: 1,

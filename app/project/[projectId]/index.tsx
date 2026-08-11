@@ -28,11 +28,11 @@ import {
 } from '@/domain/playback';
 import {
   canTogglePracticePlayback,
-  getConfiguredPracticeSegment,
-  selectInitialPracticeSegment,
+  getConfiguredPracticeRange,
+  selectInitialPracticeRange,
 } from '@/domain/practice';
 import type { DanceProject } from '@/domain/project';
-import type { SegmentIndex } from '@/domain/segment';
+import { derivePracticeRanges, type PracticeRangeIndex } from '@/domain/segment';
 import { type TempoLoopPlayerController, useTempoLoopPlayer } from '@/playback/useTempoLoopPlayer';
 import { projectRepository } from '@/repositories/ProjectRepository';
 import { useProjectStore } from '@/stores/useProjectStore';
@@ -87,7 +87,7 @@ export default function PracticeProjectScreen() {
     leadInMs: LeadInMs;
   } | null>(null);
   const leadInPersistenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [selectedSegment, setSelectedSegment] = useState<SegmentIndex | null>(null);
+  const [selectedRange, setSelectedRange] = useState<PracticeRangeIndex | null>(null);
   const [selectedLeadInMs, setSelectedLeadInMs] = useState<LeadInMs>(DEFAULT_LEAD_IN_MS);
   const [isEntering, setIsEntering] = useState(false);
   const [isPreparingSegment, setIsPreparingSegment] = useState(false);
@@ -101,6 +101,11 @@ export default function PracticeProjectScreen() {
         ? null
         : (projects.find((candidate) => candidate.id === projectId) ?? null),
     [projectId, projects],
+  );
+  const practiceRanges = useMemo(
+    () =>
+      project === null ? null : derivePracticeRanges(project.practiceMarkers, project.durationMs),
+    [project],
   );
   const audioUri = useMemo(() => {
     if (project === null) {
@@ -175,8 +180,8 @@ export default function PracticeProjectScreen() {
       }
 
       const currentAudioUri = projectRepository.resolveAudioUri(currentProject);
-      const initialSegment = selectInitialPracticeSegment(currentProject);
-      setSelectedSegment(initialSegment);
+      const initialRange = selectInitialPracticeRange(currentProject);
+      setSelectedRange(initialRange);
       setAudioLoadFailed(false);
       setIsEntering(true);
 
@@ -195,13 +200,13 @@ export default function PracticeProjectScreen() {
         return;
       }
 
-      const segment = getConfiguredPracticeSegment(currentProject, initialSegment);
-      if (segment === null) {
+      const practiceRange = getConfiguredPracticeRange(currentProject, initialRange);
+      if (practiceRange === null) {
         return;
       }
-      const range = calculatePlaybackRange(segment, leadInMsRef.current);
+      const range = calculatePlaybackRange(practiceRange, leadInMsRef.current);
       const prepared = await playerRef.current.preparePracticeSegment({
-        segmentIndex: segment.index,
+        segmentIndex: practiceRange.index,
         clipStartMs: range.playFromMs,
         clipEndMs: range.stopAtMs,
         countdownMs: range.countdownMs,
@@ -268,28 +273,28 @@ export default function PracticeProjectScreen() {
       });
   }, [enterFocusedProject, isEntering, showPlaybackError, tokenIsCurrent]);
 
-  const handleSelectSegment = useCallback(
-    (segmentIndex: SegmentIndex) => {
+  const handleSelectRange = useCallback(
+    (rangeIndex: PracticeRangeIndex) => {
       const currentProject = projectRef.current;
       if (currentProject === null || isEntering || isOpeningEditor) {
         return;
       }
-      const segment = getConfiguredPracticeSegment(currentProject, segmentIndex);
-      if (segment === null) {
+      const practiceRange = getConfiguredPracticeRange(currentProject, rangeIndex);
+      if (practiceRange === null) {
         return;
       }
 
       const command = prepareCommandRef.current + 1;
       prepareCommandRef.current = command;
       const token = focusTokenRef.current;
-      const range = calculatePlaybackRange(segment, leadInMsRef.current);
-      setSelectedSegment(segmentIndex);
+      const range = calculatePlaybackRange(practiceRange, leadInMsRef.current);
+      setSelectedRange(rangeIndex);
       isPreparingSegmentRef.current = true;
       setIsPreparingSegment(true);
       setAudioLoadFailed(false);
       void playerRef.current
         .preparePracticeSegment({
-          segmentIndex,
+          segmentIndex: rangeIndex,
           clipStartMs: range.playFromMs,
           clipEndMs: range.stopAtMs,
           countdownMs: range.countdownMs,
@@ -371,8 +376,8 @@ export default function PracticeProjectScreen() {
   );
 
   const configuredSelection =
-    project === null ? null : getConfiguredPracticeSegment(project, selectedSegment);
-  const selectedRange: PlaybackRange | null =
+    project === null ? null : getConfiguredPracticeRange(project, selectedRange);
+  const selectedPlaybackRange: PlaybackRange | null =
     configuredSelection === null
       ? null
       : calculatePlaybackRange(configuredSelection, selectedLeadInMs);
@@ -383,8 +388,8 @@ export default function PracticeProjectScreen() {
   const playbackBusy = isEntering || isPreparingSegment || isOpeningEditor || isToggling;
   const playbackEnabled =
     playerOwnsProject &&
-    player.snapshot.segmentIndex === selectedSegment &&
-    canTogglePracticePlayback(player.snapshot, selectedRange, playbackBusy);
+    player.snapshot.segmentIndex === selectedRange &&
+    canTogglePracticePlayback(player.snapshot, selectedPlaybackRange, playbackBusy);
 
   const handleTogglePlayback = () => {
     if (!playbackEnabled) {
@@ -396,24 +401,22 @@ export default function PracticeProjectScreen() {
     }
     lastPlaybackToggleAtRef.current = acceptedAtMs;
     const currentProject = projectRef.current;
-    const segment =
-      currentProject === null
-        ? null
-        : getConfiguredPracticeSegment(currentProject, selectedSegment);
-    if (segment === null) {
+    const practiceRange =
+      currentProject === null ? null : getConfiguredPracticeRange(currentProject, selectedRange);
+    if (practiceRange === null) {
       return;
     }
     const wasActive =
       playerRef.current.snapshot.status === 'playing' ||
       playerRef.current.snapshot.status === 'countdown';
-    const range = calculatePlaybackRange(segment, leadInMsRef.current);
+    const range = calculatePlaybackRange(practiceRange, leadInMsRef.current);
     const token = focusTokenRef.current;
     const command = prepareCommandRef.current + 1;
     prepareCommandRef.current = command;
     setIsToggling(true);
     void (async () => {
       const prepared = await playerRef.current.preparePracticeSegment({
-        segmentIndex: segment.index,
+        segmentIndex: practiceRange.index,
         clipStartMs: range.playFromMs,
         clipEndMs: range.stopAtMs,
         countdownMs: range.countdownMs,
@@ -554,11 +557,10 @@ export default function PracticeProjectScreen() {
           {COPY.practice.segmentsHeading}
         </Text>
         <SegmentGrid
-          durationMs={project.durationMs}
           interactionDisabled={controlsDisabled}
-          onSelectSegment={handleSelectSegment}
-          segments={project.segments}
-          selectedSegment={selectedSegment}
+          onSelectRange={handleSelectRange}
+          ranges={practiceRanges ?? []}
+          selectedRange={selectedRange}
         />
 
         {isEntering || isPreparingSegment || player.snapshot.status === 'loading' || showRetry ? (

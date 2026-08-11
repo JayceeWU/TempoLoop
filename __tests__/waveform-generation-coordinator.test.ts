@@ -1,4 +1,4 @@
-import { createEmptySegments } from '@/domain/segment';
+import { createDefaultPracticeMarkers } from '@/domain/segment';
 import type { DanceProject, StoredWaveform } from '@/domain/project';
 import {
   WaveformGenerationCoordinator,
@@ -10,7 +10,7 @@ const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
 
 function project(waveformStatus: DanceProject['waveformStatus'] = 'pending'): DanceProject {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     id: PROJECT_ID,
     name: 'Practice',
     createdAtIso: '2026-08-01T12:00:00.000Z',
@@ -23,7 +23,7 @@ function project(waveformStatus: DanceProject['waveformStatus'] = 'pending'): Da
     sourceSizeBytes: null,
     selectedRate: 1,
     leadInMs: 6_000,
-    segments: createEmptySegments(),
+    practiceMarkers: createDefaultPracticeMarkers(90_000),
   };
 }
 
