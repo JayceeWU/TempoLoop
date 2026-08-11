@@ -2,10 +2,10 @@ import { render } from '@testing-library/react-native';
 
 import { ProjectCard } from '@/components/ProjectCard';
 import type { DanceProject } from '@/domain/project';
-import { createEmptySegments } from '@/domain/segment';
+import { createDefaultPracticeMarkers } from '@/domain/segment';
 
 const PROJECT: DanceProject = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   id: 'c733c86b-6877-4986-bd4d-a26392f7dc82',
   name: 'Practice Track',
   createdAtIso: '2026-07-31T12:00:00.000Z',
@@ -18,7 +18,7 @@ const PROJECT: DanceProject = {
   sourceSizeBytes: null,
   selectedRate: 1,
   leadInMs: 6_000,
-  segments: createEmptySegments(),
+  practiceMarkers: createDefaultPracticeMarkers(90_000),
 };
 
 const noop = () => undefined;
@@ -37,7 +37,7 @@ describe('ProjectCard', () => {
     );
 
     expect(screen.getByText('Practice Track')).toBeTruthy();
-    expect(screen.getByText('1:30 · 0 of 9 segments')).toBeTruthy();
+    expect(screen.getByText('1:30 · 1 of 12 ranges')).toBeTruthy();
     expect(screen.queryByText('Waveform ready')).toBeNull();
     expect(screen.queryByText(/Updated/)).toBeNull();
     expect(

@@ -5,6 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { AppButton } from '@/components/AppButton';
 import { COPY } from '@/constants/copy';
 import { colors, fontSizes, fontWeights, radii, spacing } from '@/constants/theme';
+import { PRACTICE_RANGE_DEFINITIONS } from '@/domain/segment';
 import type { PlaybackSnapshot } from '@/domain/playback';
 import {
   diagnosticsService,
@@ -231,11 +232,14 @@ export function DiagnosticsScreen({
               value={yesNo(snapshot.playback.sourceLoaded)}
             />
             <DiagnosticRow
-              label={COPY.diagnostics.selectedSegment}
+              label={COPY.diagnostics.selectedRange}
               value={
                 snapshot.playback.segmentIndex === null
                   ? COPY.diagnostics.none
-                  : COPY.diagnostics.segmentValue(snapshot.playback.segmentIndex + 1)
+                  : COPY.diagnostics.rangeValue(
+                      PRACTICE_RANGE_DEFINITIONS[snapshot.playback.segmentIndex]?.label ??
+                        String(snapshot.playback.segmentIndex + 1),
+                    )
               }
             />
             <DiagnosticRow

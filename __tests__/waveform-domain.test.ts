@@ -55,26 +55,26 @@ describe('waveform domain', () => {
     expect(clampWaveformPosition(-5, 60_000)).toBe(0);
   });
 
-  test('creates a 30-second viewport and handles short tracks', () => {
-    expect(createWaveformViewport(120_000)).toEqual({ startMs: 0, durationMs: 30_000 });
+  test('creates a 60-second viewport and handles short tracks', () => {
+    expect(createWaveformViewport(120_000)).toEqual({ startMs: 0, durationMs: 60_000 });
     expect(createWaveformViewport(8_000)).toEqual({ startMs: 0, durationMs: 8_000 });
     expect(createWaveformViewport(0)).toEqual({ startMs: 0, durationMs: 0 });
   });
 
-  test('zooms around the focal time and clamps the window to 10-30 seconds', () => {
+  test('zooms around the focal time and clamps the window to 10-60 seconds', () => {
     const initial = createWaveformViewport(120_000);
 
     expect(zoomWaveformViewport(initial, 2, 0.5, 120_000)).toEqual({
-      startMs: 7_500,
-      durationMs: 15_000,
+      startMs: 15_000,
+      durationMs: 30_000,
     });
     expect(zoomWaveformViewport(initial, 10, 0.5, 120_000)).toEqual({
-      startMs: 10_000,
+      startMs: 25_000,
       durationMs: 10_000,
     });
     expect(
       zoomWaveformViewport({ startMs: 40_000, durationMs: 10_000 }, 0.1, 0.5, 120_000),
-    ).toEqual({ startMs: 30_000, durationMs: 30_000 });
+    ).toEqual({ startMs: 15_000, durationMs: 60_000 });
   });
 
   test('maps overview panning and main-waveform seeking through the viewport', () => {

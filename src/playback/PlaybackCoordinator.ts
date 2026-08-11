@@ -1,11 +1,16 @@
 import {
+  LEAD_IN_OPTIONS_MS,
   PLAYBACK_RATES,
   type PlaybackMode,
   type PlaybackRate,
   type PlaybackSnapshot,
   isPlaybackRate,
 } from '@/domain/playback';
-import { SegmentEndGuard, type SegmentEndGuardScheduler } from '@/playback/SegmentEndGuard';
+import {
+  PRACTICE_POST_ROLL_MS,
+  SegmentEndGuard,
+  type SegmentEndGuardScheduler,
+} from '@/playback/SegmentEndGuard';
 import {
   type StructuredDiagnosticsRecorder,
   structuredDevelopmentDiagnostics,
@@ -47,6 +52,7 @@ export interface PracticeSegmentInput {
   readonly segmentIndex: number;
   readonly clipStartMs: number;
   readonly clipEndMs: number;
+  readonly countdownMs: number;
   readonly rate: PlaybackRate;
 }
 
@@ -64,6 +70,8 @@ const defaultScheduler: PlaybackCoordinatorScheduler = {
   clearTimeout: (handle) => clearTimeout(handle),
 };
 
+const MAX_COUNTDOWN_MS = LEAD_IN_OPTIONS_MS.at(-1) ?? 0;
+
 const INITIAL_SNAPSHOT: PlaybackSnapshot = {
   mode: 'idle',
   status: 'idle',
@@ -74,6 +82,7 @@ const INITIAL_SNAPSHOT: PlaybackSnapshot = {
   clipStartMs: 0,
   clipEndMs: null,
   rate: 1,
+  countdownRemainingSeconds: null,
   commandGeneration: 0,
 };
 
@@ -114,6 +123,10 @@ export class PlaybackCoordinator {
   private nativeWasPlaying = false;
   private playbackAuthorized = false;
   private audioFailureGeneration: number | null = null;
+  private practiceCountdownMs = 0;
+  private countdownDeadlineMs: number | null = null;
+  private countdownGeneration: number | null = null;
+  private countdownTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
 
   constructor(
@@ -159,9 +172,12 @@ export class PlaybackCoordinator {
       input.segmentIndex < 0 ||
       !Number.isInteger(input.clipStartMs) ||
       !Number.isInteger(input.clipEndMs) ||
+      !Number.isInteger(input.countdownMs) ||
       input.clipStartMs < 0 ||
       input.clipStartMs >= input.clipEndMs ||
       input.clipEndMs > this.snapshot.sourceDurationMs ||
+      input.countdownMs < 0 ||
+      input.countdownMs > MAX_COUNTDOWN_MS ||
       !isPlaybackRate(input.rate)
     ) {
       throw new Error('E_PLAYBACK_INVALID_RANGE');
@@ -172,12 +188,14 @@ export class PlaybackCoordinator {
     this.player.setRate(input.rate);
     this.nativeWasPlaying = false;
     this.playbackAuthorized = false;
+    this.practiceCountdownMs = input.countdownMs;
     this.patchSnapshot({
       status: 'loading',
       segmentIndex: input.segmentIndex,
       clipStartMs: input.clipStartMs,
       clipEndMs: input.clipEndMs,
       rate: input.rate,
+      countdownRemainingSeconds: null,
     });
 
     const seekCompleted = await this.guardedSeek(input.clipStartMs, generation);
@@ -206,6 +224,15 @@ export class PlaybackCoordinator {
       return true;
     }
 
+    if (snapshot.status === 'countdown') {
+      this.nextGeneration();
+      this.player.pause();
+      this.nativeWasPlaying = false;
+      this.playbackAuthorized = false;
+      this.patchSnapshot({ status: 'ready', countdownRemainingSeconds: null });
+      return true;
+    }
+
     if (
       snapshot.status !== 'ready' &&
       snapshot.status !== 'paused' &&
@@ -215,29 +242,23 @@ export class PlaybackCoordinator {
     }
 
     const generation = this.nextGeneration();
-    const insideRange =
-      snapshot.status === 'paused' &&
-      snapshot.sourcePositionMs >= snapshot.clipStartMs &&
-      snapshot.sourcePositionMs < snapshot.clipEndMs;
-
-    if (!insideRange) {
-      this.player.pause();
-      const seekCompleted = await this.guardedSeek(snapshot.clipStartMs, generation);
-      if (!seekCompleted) {
-        return false;
-      }
-      this.patchSnapshot({ sourcePositionMs: snapshot.clipStartMs });
+    this.player.pause();
+    const seekCompleted = await this.guardedSeek(snapshot.clipStartMs, generation);
+    if (!seekCompleted) {
+      return false;
     }
+    this.patchSnapshot({ sourcePositionMs: snapshot.clipStartMs });
 
     if (!this.isCurrent(generation)) {
       return false;
     }
 
-    this.player.setRate(snapshot.rate);
-    this.playbackAuthorized = true;
-    this.player.play();
-    this.patchSnapshot({ status: 'playing' });
-    this.armPracticeEndGuard(generation);
+    if (this.practiceCountdownMs > 0) {
+      this.beginPracticeCountdown(generation);
+      return true;
+    }
+
+    this.startPracticePlayback(generation);
     return true;
   }
 
@@ -317,11 +338,28 @@ export class PlaybackCoordinator {
     }
 
     const wasPlaying = this.snapshot.status === 'playing';
-    const generation = this.nextGeneration();
+    const wasCountingDown = this.snapshot.status === 'countdown';
+    const preserveEndGuard =
+      wasPlaying && this.endGuard.isArmedFor(this.snapshot.commandGeneration);
+    const generation = this.nextGeneration({
+      preserveCountdown: wasCountingDown,
+      preserveEndGuard,
+    });
     this.player.setRate(rate);
     this.patchSnapshot({ rate });
-    if (wasPlaying) {
-      this.armPracticeEndGuard(generation);
+    if (wasCountingDown) {
+      this.countdownGeneration = generation;
+    } else if (wasPlaying) {
+      const updated =
+        preserveEndGuard &&
+        this.endGuard.updateRate({
+          commandGeneration: generation,
+          sourcePositionMs: this.snapshot.sourcePositionMs,
+          rate,
+        });
+      if (!updated) {
+        this.armPracticeEndGuard(generation);
+      }
     }
     return true;
   }
@@ -340,7 +378,9 @@ export class PlaybackCoordinator {
       clipStartMs: 0,
       clipEndMs: null,
       rate: 1,
+      countdownRemainingSeconds: null,
     });
+    this.practiceCountdownMs = 0;
   }
 
   clearSource(projectId?: string): boolean {
@@ -381,12 +421,13 @@ export class PlaybackCoordinator {
 
     if (status.error !== null) {
       this.endGuard.clear();
+      this.clearCountdown();
       this.nativeWasPlaying = false;
       this.playbackAuthorized = false;
       for (const waiter of [...this.statusWaiters]) {
         this.finishWaiter(waiter, false);
       }
-      this.patchSnapshot({ status: 'error' });
+      this.patchSnapshot({ status: 'error', countdownRemainingSeconds: null });
       this.recordAudioLoadFailure();
       return;
     }
@@ -404,18 +445,15 @@ export class PlaybackCoordinator {
 
     if (this.snapshot.mode === 'practice' && this.snapshot.clipEndMs !== null) {
       const observationGeneration = this.snapshot.commandGeneration;
-      const finishedByStatus = this.endGuard.observe({
+      if (status.didJustFinish && this.snapshot.status === 'playing') {
+        void this.finishPracticeRange(observationGeneration, 0);
+        return;
+      }
+      this.endGuard.observe({
         commandGeneration: observationGeneration,
         sourcePositionMs,
         playing: status.playing,
       });
-      if (finishedByStatus) {
-        return;
-      }
-      if (status.didJustFinish) {
-        void this.finishPracticeRange(observationGeneration);
-        return;
-      }
     } else if (status.didJustFinish && this.snapshot.mode === 'editor') {
       this.nativeWasPlaying = false;
       this.patchSnapshot({ status: 'ended' });
@@ -460,6 +498,7 @@ export class PlaybackCoordinator {
     this.playbackAuthorized = false;
     this.currentSourceUri = null;
     this.currentProjectId = null;
+    this.practiceCountdownMs = 0;
     this.listeners.clear();
     this.disposed = true;
   }
@@ -505,6 +544,7 @@ export class PlaybackCoordinator {
       clipStartMs: 0,
       clipEndMs: null,
       rate: mode === 'editor' ? 1 : rate,
+      countdownRemainingSeconds: null,
     });
 
     if (canReuseSource) {
@@ -569,6 +609,78 @@ export class PlaybackCoordinator {
     return current;
   }
 
+  private beginPracticeCountdown(generation: number): void {
+    if (!this.isCurrent(generation) || this.practiceCountdownMs <= 0) {
+      this.startPracticePlayback(generation);
+      return;
+    }
+
+    this.clearCountdown();
+    this.player.pause();
+    this.nativeWasPlaying = false;
+    this.playbackAuthorized = false;
+    this.countdownDeadlineMs = this.scheduler.now() + this.practiceCountdownMs;
+    this.countdownGeneration = generation;
+    this.patchSnapshot({ status: 'countdown' });
+    this.scheduleCountdownTick();
+  }
+
+  private scheduleCountdownTick(): void {
+    const deadlineMs = this.countdownDeadlineMs;
+    const generation = this.countdownGeneration;
+    if (deadlineMs === null || generation === null) {
+      return;
+    }
+
+    const remainingMs = Math.max(0, deadlineMs - this.scheduler.now());
+    if (remainingMs === 0) {
+      this.clearCountdown();
+      if (this.isCurrent(generation) && this.snapshot.status === 'countdown') {
+        this.startPracticePlayback(generation);
+      }
+      return;
+    }
+
+    const remainingSeconds = Math.ceil(remainingMs / 1_000);
+    if (this.snapshot.countdownRemainingSeconds !== remainingSeconds) {
+      this.patchSnapshot({ countdownRemainingSeconds: remainingSeconds });
+    }
+
+    const nextBoundaryDelayMs = Math.max(1, remainingMs - (remainingSeconds - 1) * 1_000);
+    this.countdownTimer = this.scheduler.setTimeout(
+      () => this.scheduleCountdownTick(),
+      nextBoundaryDelayMs,
+    );
+  }
+
+  private startPracticePlayback(generation: number): void {
+    const snapshot = this.snapshot;
+    if (
+      !this.isCurrent(generation) ||
+      snapshot.mode !== 'practice' ||
+      snapshot.segmentIndex === null ||
+      snapshot.clipEndMs === null
+    ) {
+      return;
+    }
+
+    this.clearCountdown();
+    this.player.setRate(snapshot.rate);
+    this.playbackAuthorized = true;
+    this.player.play();
+    this.patchSnapshot({ status: 'playing', countdownRemainingSeconds: null });
+    this.armPracticeEndGuard(generation);
+  }
+
+  private clearCountdown(): void {
+    if (this.countdownTimer !== null) {
+      this.scheduler.clearTimeout(this.countdownTimer);
+      this.countdownTimer = null;
+    }
+    this.countdownDeadlineMs = null;
+    this.countdownGeneration = null;
+  }
+
   private armPracticeEndGuard(generation: number): void {
     const snapshot = this.snapshot;
     if (
@@ -585,13 +697,17 @@ export class PlaybackCoordinator {
       sourcePositionMs: snapshot.sourcePositionMs,
       clipEndMs: snapshot.clipEndMs,
       rate: snapshot.rate,
-      onEnd: (guardGeneration) => {
-        void this.finishPracticeRange(guardGeneration);
+      postRollMs: PRACTICE_POST_ROLL_MS,
+      onEnd: ({ commandGeneration, postRollOvershootMs }) => {
+        void this.finishPracticeRange(commandGeneration, postRollOvershootMs);
       },
     });
   }
 
-  private async finishPracticeRange(guardGeneration: number): Promise<void> {
+  private async finishPracticeRange(
+    guardGeneration: number,
+    postRollOvershootMs: number,
+  ): Promise<void> {
     if (
       !this.isCurrent(guardGeneration) ||
       this.snapshot.mode !== 'practice' ||
@@ -609,14 +725,14 @@ export class PlaybackCoordinator {
       segmentIndex: this.snapshot.segmentIndex ?? 0,
       commandGeneration: guardGeneration,
       rate: this.snapshot.rate,
-      overshootMs: Math.max(0, this.snapshot.sourcePositionMs - this.snapshot.clipEndMs),
+      overshootMs: postRollOvershootMs,
     });
     const resetPositionMs = this.snapshot.clipStartMs;
     const generation = this.nextGeneration();
     this.player.pause();
     this.nativeWasPlaying = false;
     this.playbackAuthorized = false;
-    this.patchSnapshot({ status: 'loading' });
+    this.patchSnapshot({ status: 'loading', countdownRemainingSeconds: null });
     const seekCompleted = await this.guardedSeek(resetPositionMs, generation);
     if (seekCompleted) {
       this.patchSnapshot({ sourcePositionMs: resetPositionMs, status: 'ready' });
@@ -663,13 +779,23 @@ export class PlaybackCoordinator {
     waiter.resolve(matched);
   }
 
-  private nextGeneration(): number {
+  private nextGeneration(
+    options: { readonly preserveCountdown?: boolean; readonly preserveEndGuard?: boolean } = {},
+  ): number {
     const generation = this.snapshot.commandGeneration + 1;
-    this.endGuard.clear();
+    if (options.preserveEndGuard !== true) {
+      this.endGuard.clear();
+    }
+    if (options.preserveCountdown !== true) {
+      this.clearCountdown();
+    }
     for (const waiter of [...this.statusWaiters]) {
       this.finishWaiter(waiter, false);
     }
-    this.patchSnapshot({ commandGeneration: generation });
+    this.patchSnapshot({
+      commandGeneration: generation,
+      ...(options.preserveCountdown === true ? {} : { countdownRemainingSeconds: null }),
+    });
     return generation;
   }
 

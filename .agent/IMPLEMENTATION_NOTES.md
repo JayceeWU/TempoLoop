@@ -154,3 +154,9 @@
   loaded Project sources are still unloaded before deletion. Replacement Preview build 22
   (`a73f2202-4d5b-494b-a8e7-1f9a802a49b4`) completed successfully; physical-device import and
   deletion results remain **Not tested** until that APK is installed.
+- Practice timing now supports `0/2/4/6/8` second lead-ins. When a Segment begins too close to the
+  source start to supply the full lead-in, the JavaScript playback coordinator fills only the
+  missing wall-clock duration with a silent visual countdown before starting at source time zero.
+  Reaching the saved Segment end starts a fixed two-second wall-clock post-roll; speed changes do
+  not restart that deadline, and natural media completion may end it early. The editor waveform
+  default and maximum viewport are now 60 seconds, with the existing 10-second minimum zoom.

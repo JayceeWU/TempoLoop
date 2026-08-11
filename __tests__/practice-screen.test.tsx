@@ -89,7 +89,7 @@ jest.mock('@/playback/useTempoLoopPlayer', () => {
 });
 
 const PROJECT: DanceProject = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   id: 'project-1',
   name: 'Warm Up',
   createdAtIso: '2026-07-30T12:00:00.000Z',
@@ -102,17 +102,10 @@ const PROJECT: DanceProject = {
   sourceSizeBytes: 1_024,
   selectedRate: 1,
   leadInMs: 6_000,
-  segments: [
-    { id: 'segment-1', index: 0, startMs: 10_000, endMs: 20_000 },
-    { id: 'segment-2', index: 1, startMs: 30_000, endMs: 40_000 },
-    { id: 'segment-3', index: 2, startMs: null, endMs: null },
-    { id: 'segment-4', index: 3, startMs: null, endMs: null },
-    { id: 'segment-5', index: 4, startMs: null, endMs: null },
-    { id: 'segment-6', index: 5, startMs: null, endMs: null },
-    { id: 'segment-7', index: 6, startMs: null, endMs: null },
-    { id: 'segment-8', index: 7, startMs: null, endMs: null },
-    { id: 'segment-9', index: 8, startMs: null, endMs: null },
-  ],
+  practiceMarkers: {
+    startMs: [10_000, 30_000, null, null, null, null],
+    finalEndMs: 40_000,
+  },
 };
 
 function idleSnapshot(): PlaybackSnapshot {
@@ -126,6 +119,7 @@ function idleSnapshot(): PlaybackSnapshot {
     clipStartMs: 0,
     clipEndMs: null,
     rate: 1,
+    countdownRemainingSeconds: null,
     commandGeneration: 0,
   };
 }
@@ -193,11 +187,14 @@ function installPlayerBehavior(): void {
 async function renderPrepared(project: DanceProject = PROJECT) {
   useProjectStore.setState({ projects: [project] });
   const screen = await render(<PracticeProjectScreen />);
+  const firstRangeStartMs = project.practiceMarkers.startMs[0] ?? 0;
+  const firstRangeEndMs = project.practiceMarkers.startMs[1] ?? project.practiceMarkers.finalEndMs;
   await waitFor(() => {
     expect(mockPreparePracticeSegment).toHaveBeenCalledWith({
       segmentIndex: 0,
-      clipStartMs: Math.max(0, 10_000 - project.leadInMs),
-      clipEndMs: 20_000,
+      clipStartMs: Math.max(0, firstRangeStartMs - project.leadInMs),
+      clipEndMs: firstRangeEndMs,
+      countdownMs: Math.max(0, project.leadInMs - firstRangeStartMs),
       rate: project.selectedRate,
     });
   });
@@ -210,8 +207,8 @@ function expectConfiguredPracticeChoicesEnabled(
   for (const speedButton of screen.getAllByRole('radio')) {
     expect(speedButton).toBeEnabled();
   }
-  expect(screen.getByRole('button', { name: /Segment 1/ })).toBeEnabled();
-  expect(screen.getByRole('button', { name: /Segment 2/ })).toBeEnabled();
+  expect(screen.getByRole('button', { name: /Practice range 1,/ })).toBeEnabled();
+  expect(screen.getByRole('button', { name: /Practice range 2,/ })).toBeEnabled();
 }
 
 beforeEach(() => {
@@ -265,7 +262,7 @@ describe('Android practice project screen', () => {
       1,
     );
     expect(
-      screen.getByRole('button', { name: /Segment 1/ }).props.accessibilityState,
+      screen.getByRole('button', { name: /Practice range 1,/ }).props.accessibilityState,
     ).toMatchObject({ selected: true });
     expect(screen.getByRole('button', { name: 'Play selected segment' })).toBeEnabled();
   });
@@ -291,14 +288,13 @@ describe('Android practice project screen', () => {
     expect(screen.queryByText('Set at least one segment to begin practicing.')).toBeNull();
   });
 
-  it('keeps Play disabled when no segment is configured', async () => {
+  it('keeps Play disabled when no practice range is configured', async () => {
     const emptyProject: DanceProject = {
       ...PROJECT,
-      segments: PROJECT.segments.map((segment) => ({
-        ...segment,
-        startMs: null,
-        endMs: null,
-      })) as DanceProject['segments'],
+      practiceMarkers: {
+        startMs: [null, null, null, null, null, null],
+        finalEndMs: null,
+      },
     };
     useProjectStore.setState({ projects: [emptyProject] });
     const screen = await render(<PracticeProjectScreen />);
@@ -309,17 +305,18 @@ describe('Android practice project screen', () => {
     expect(screen.getByRole('button', { name: 'Play selected segment' })).toBeDisabled();
   });
 
-  it('prepares a selected segment without starting playback', async () => {
+  it('prepares a selected practice range without starting playback', async () => {
     const screen = await renderPrepared();
     mockPreparePracticeSegment.mockClear();
     mockTogglePractice.mockClear();
 
-    await fireEvent.press(screen.getByRole('button', { name: /Segment 2/ }));
+    await fireEvent.press(screen.getByRole('button', { name: /Practice range 2,/ }));
 
     expect(mockPreparePracticeSegment).toHaveBeenCalledWith({
       segmentIndex: 1,
       clipStartMs: 24_000,
       clipEndMs: 40_000,
+      countdownMs: 0,
       rate: 1,
     });
     expect(mockTogglePractice).not.toHaveBeenCalled();
@@ -402,7 +399,7 @@ describe('Android practice project screen', () => {
     mockPreparePracticeSegment.mockClear();
     mockPreparePracticeSegment.mockReturnValueOnce(pendingPreparation);
 
-    fireEvent.press(screen.getByRole('button', { name: /Segment 2/ }));
+    fireEvent.press(screen.getByRole('button', { name: /Practice range 2,/ }));
     await waitFor(() => expect(mockPreparePracticeSegment).toHaveBeenCalledTimes(1));
 
     expect(screen.getByRole('adjustable', { name: 'Seconds before segment start' })).toBeEnabled();
@@ -422,7 +419,8 @@ describe('Android practice project screen', () => {
     expect(mockPreparePracticeSegment).toHaveBeenLastCalledWith({
       segmentIndex: 0,
       clipStartMs: 4_000,
-      clipEndMs: 20_000,
+      clipEndMs: 30_000,
+      countdownMs: 0,
       rate: 1,
     });
     expect(mockTogglePractice).toHaveBeenCalledTimes(1);
@@ -438,12 +436,56 @@ describe('Android practice project screen', () => {
     expect(mockPreparePracticeSegment).toHaveBeenLastCalledWith({
       segmentIndex: 0,
       clipStartMs: 4_000,
-      clipEndMs: 20_000,
+      clipEndMs: 30_000,
+      countdownMs: 0,
       rate: 1,
     });
     expect(mockTogglePractice).toHaveBeenCalledTimes(1);
     expect(mockSnapshot.status).toBe('ready');
     expect(mockSnapshot.sourcePositionMs).toBe(4_000);
+  });
+
+  it('shows the missing lead-in as a silent countdown only on the Play button', async () => {
+    const project = {
+      ...PROJECT,
+      leadInMs: 8_000 as const,
+      practiceMarkers: {
+        ...PROJECT.practiceMarkers,
+        startMs: [
+          3_000,
+          30_000,
+          null,
+          null,
+          null,
+          null,
+        ] as DanceProject['practiceMarkers']['startMs'],
+      },
+    };
+    const screen = await renderPrepared(project);
+    mockPreparePracticeSegment.mockClear();
+    mockTogglePractice.mockImplementationOnce(async () => {
+      mockPatchSnapshot({
+        status: 'countdown',
+        countdownRemainingSeconds: 5,
+        commandGeneration: mockSnapshot.commandGeneration + 1,
+      });
+      return true;
+    });
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Play selected segment' }));
+
+    expect(mockPreparePracticeSegment).toHaveBeenCalledWith({
+      segmentIndex: 0,
+      clipStartMs: 0,
+      clipEndMs: 30_000,
+      countdownMs: 5_000,
+      rate: 1,
+    });
+    expect(
+      screen.getByRole('button', { name: 'Starting in 5 seconds. Tap to cancel.' }),
+    ).toBeEnabled();
+    expect(screen.getByRole('adjustable', { name: 'Seconds before segment start' })).toBeEnabled();
+    expectConfiguredPracticeChoicesEnabled(screen);
   });
 
   it.each([
@@ -503,7 +545,8 @@ describe('Android practice project screen', () => {
     expect(mockPreparePracticeSegment).toHaveBeenCalledWith({
       segmentIndex: 0,
       clipStartMs: 6_000,
-      clipEndMs: 20_000,
+      clipEndMs: 30_000,
+      countdownMs: 0,
       rate: 1,
     });
     expect(mockTogglePractice).toHaveBeenCalledTimes(1);
@@ -540,7 +583,8 @@ describe('Android practice project screen', () => {
     expect(mockPreparePracticeSegment).toHaveBeenCalledWith({
       segmentIndex: 0,
       clipStartMs: 8_000,
-      clipEndMs: 20_000,
+      clipEndMs: 30_000,
+      countdownMs: 0,
       rate: 1,
     });
     expect(mockPreparePracticeSegment.mock.invocationCallOrder[0]).toBeLessThan(
@@ -580,8 +624,8 @@ describe('Android practice project screen', () => {
       .mockImplementationOnce(() => firstSeek)
       .mockImplementationOnce(async () => true);
 
-    await fireEvent.press(screen.getByRole('button', { name: /Segment 2/ }));
-    await fireEvent.press(screen.getByRole('button', { name: /Segment 1/ }));
+    await fireEvent.press(screen.getByRole('button', { name: /Practice range 2,/ }));
+    await fireEvent.press(screen.getByRole('button', { name: /Practice range 1,/ }));
 
     expect(mockPreparePracticeSegment).toHaveBeenCalledTimes(2);
     await act(async () => resolveFirst(false));

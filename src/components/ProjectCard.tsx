@@ -4,15 +4,16 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { COPY } from '@/constants/copy';
 import { colors, fontSizes, fontWeights, radii, shadows, spacing } from '@/constants/theme';
 import type { DanceProject } from '@/domain/project';
-import { isSegmentConfigured } from '@/domain/segment';
+import { derivePracticeRanges, isPracticeRangeConfigured } from '@/domain/segment';
 import type { ProjectMediaStatus, ProjectRepairIssue } from '@/services/RecoveryService';
 import { formatDuration } from '@/utils/time';
 
 const CARD_ACTION_SIZE = 48;
 
-function configuredSegmentCount(project: DanceProject): number {
-  return project.segments.filter((segment) => isSegmentConfigured(segment, project.durationMs))
-    .length;
+function availablePracticeRangeCount(project: DanceProject): number {
+  return derivePracticeRanges(project.practiceMarkers, project.durationMs).filter(
+    isPracticeRangeConfigured,
+  ).length;
 }
 
 function repairIssueMessage(issue: ProjectRepairIssue): string {
@@ -51,7 +52,7 @@ function ProjectCardComponent({
   onShowActions,
 }: ProjectCardProps) {
   const duration = formatDuration(project.durationMs);
-  const configuredCount = configuredSegmentCount(project);
+  const configuredCount = availablePracticeRangeCount(project);
 
   if (mediaStatus?.state === 'needs-repair') {
     return (

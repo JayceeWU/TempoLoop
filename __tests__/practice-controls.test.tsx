@@ -4,19 +4,15 @@ import { PlaybackButton } from '@/components/PlaybackButton';
 import { SegmentGrid } from '@/components/SegmentGrid';
 import { SpeedSelector } from '@/components/SpeedSelector';
 import { colors } from '@/constants/theme';
-import type { DanceSegments } from '@/domain/segment';
+import { derivePracticeRanges, type PracticeRanges } from '@/domain/segment';
 
-const SEGMENTS: DanceSegments = [
-  { id: 'segment-1', index: 0, startMs: 8_000, endMs: 20_000 },
-  { id: 'segment-2', index: 1, startMs: 20_000, endMs: 30_000 },
-  { id: 'segment-3', index: 2, startMs: null, endMs: null },
-  { id: 'segment-4', index: 3, startMs: null, endMs: null },
-  { id: 'segment-5', index: 4, startMs: null, endMs: null },
-  { id: 'segment-6', index: 5, startMs: null, endMs: null },
-  { id: 'segment-7', index: 6, startMs: null, endMs: null },
-  { id: 'segment-8', index: 7, startMs: null, endMs: null },
-  { id: 'segment-9', index: 8, startMs: null, endMs: null },
-];
+const RANGES = derivePracticeRanges(
+  {
+    startMs: [8_000, 20_000, null, null, null, null],
+    finalEndMs: 30_000,
+  },
+  60_000,
+);
 
 describe('practice controls', () => {
   it('renders five equal speed buttons with a minimum 60 point height', async () => {
@@ -45,106 +41,62 @@ describe('practice controls', () => {
     expect(onSelectRate).toHaveBeenCalledWith(0.6);
   });
 
-  it('renders compact three-by-three segment cards and disables invalid segments', async () => {
-    const onSelectSegment = jest.fn();
+  it('renders the fixed four-by-three range grid without visible times', async () => {
+    const onSelectRange = jest.fn();
     const screen = await render(
-      <SegmentGrid
-        durationMs={60_000}
-        onSelectSegment={onSelectSegment}
-        segments={[
-          { id: 'segment-1', index: 0, startMs: 8_000, endMs: 20_000 },
-          { id: 'segment-2', index: 1, startMs: 20_000, endMs: null },
-          { id: 'segment-3', index: 2, startMs: 30_000, endMs: 30_000 },
-          { id: 'segment-4', index: 3, startMs: null, endMs: null },
-          { id: 'segment-5', index: 4, startMs: null, endMs: null },
-          { id: 'segment-6', index: 5, startMs: null, endMs: null },
-          { id: 'segment-7', index: 6, startMs: null, endMs: null },
-          { id: 'segment-8', index: 7, startMs: null, endMs: null },
-          { id: 'segment-9', index: 8, startMs: null, endMs: null },
-        ]}
-        selectedSegment={0}
-      />,
+      <SegmentGrid onSelectRange={onSelectRange} ranges={RANGES} selectedRange={0} />,
     );
 
-    const segmentButtons = screen.getAllByRole('button');
-    expect(segmentButtons).toHaveLength(9);
-    expect(screen.queryByText('Segment 1')).toBeNull();
+    const rangeButtons = screen.getAllByRole('button');
+    expect(rangeButtons).toHaveLength(12);
+    expect(screen.getByTestId('practice-range-grid')).toHaveStyle({ height: 248 });
+    expect(
+      RANGES.map(
+        (range) =>
+          within(screen.getByTestId(`practice-range-${range.index}`)).getByText(range.label).props
+            .children,
+      ),
+    ).toEqual(['1', '2', '1-2', '3', '4', '3-4', '5', '6', '5-6', '1-4', '3-6', '1-6']);
 
     const configured = screen.getByRole('button', {
-      name: /Segment 1/,
+      name: 'Practice range 1, 0:08 to 0:20',
     });
-    const incomplete = screen.getByRole('button', {
-      name: /Segment 2/,
-    });
-    const invalid = screen.getByRole('button', {
-      name: /Segment 3/,
+    const unavailable = screen.getByRole('button', {
+      name: 'Practice range 3',
     });
     expect(configured).toBeEnabled();
     expect(configured.props.accessibilityState).toMatchObject({
       selected: true,
     });
-    expect(incomplete).toBeDisabled();
-    expect(invalid).toBeDisabled();
-    expect(incomplete).toHaveStyle({
+    expect(unavailable).toBeDisabled();
+    expect(unavailable).toHaveStyle({
       backgroundColor: colors.disabledBackground,
     });
-    expect(configured).toHaveStyle({ minHeight: 76 });
-    expect(within(configured).getByText('1')).toHaveStyle({ textAlign: 'center' });
-    expect(within(configured).getByText('0:08')).toHaveStyle({
-      fontSize: 16,
-      lineHeight: 20,
-      textAlign: 'center',
-    });
-    expect(within(configured).getByText('0:20')).toHaveStyle({
-      fontSize: 16,
-      lineHeight: 20,
-      textAlign: 'center',
-    });
-    expect(within(incomplete).getByText('0:20')).toHaveStyle({ textAlign: 'center' });
-    expect(within(incomplete).getByText('--:--')).toHaveStyle({ textAlign: 'center' });
-    const separator = screen.getByTestId('segment-1-time-separator');
-    expect(separator.props.children).toBe('\u00b7');
-    expect(separator).toHaveStyle({
-      fontSize: 16,
-      lineHeight: 12,
-    });
-    expect(screen.getByTestId('segment-1-number-divider')).toHaveStyle({
-      alignSelf: 'stretch',
-      opacity: 0.35,
-      width: 1,
-    });
-    expect(screen.queryByText(/Start|End/)).toBeNull();
-    expect(screen.queryByText(/\u2013/)).toBeNull();
+    expect(configured).toHaveStyle({ minHeight: 48 });
+    expect(screen.queryByText('0:08')).toBeNull();
+    expect(screen.queryByText('0:20')).toBeNull();
 
-    await fireEvent.press(incomplete);
-    expect(onSelectSegment).not.toHaveBeenCalled();
+    await fireEvent.press(unavailable);
+    expect(onSelectRange).not.toHaveBeenCalled();
     await fireEvent.press(configured);
-    expect(onSelectSegment).toHaveBeenCalledWith(0);
+    expect(onSelectRange).toHaveBeenCalledWith(0);
   });
 
-  it('does not re-render segment cards when persisted preferences clone equal segment data', async () => {
-    const onSelectSegment = jest.fn();
+  it('does not re-render range cards when persisted preferences clone equal range data', async () => {
+    const onSelectRange = jest.fn();
     const screen = await render(
-      <SegmentGrid
-        durationMs={60_000}
-        onSelectSegment={onSelectSegment}
-        segments={SEGMENTS}
-        selectedSegment={0}
-      />,
+      <SegmentGrid onSelectRange={onSelectRange} ranges={RANGES} selectedRange={0} />,
     );
-    const initialStyle = screen.getByRole('button', { name: /Segment 1/ }).props.style;
-    const clonedSegments = SEGMENTS.map((segment) => ({ ...segment })) as DanceSegments;
+    const initialStyle = screen.getByRole('button', { name: /Practice range 1,/ }).props.style;
+    const clonedRanges = RANGES.map((range) => ({ ...range })) as PracticeRanges;
 
     await screen.rerender(
-      <SegmentGrid
-        durationMs={60_000}
-        onSelectSegment={onSelectSegment}
-        segments={clonedSegments}
-        selectedSegment={0}
-      />,
+      <SegmentGrid onSelectRange={onSelectRange} ranges={clonedRanges} selectedRange={0} />,
     );
 
-    expect(screen.getByRole('button', { name: /Segment 1/ }).props.style).toBe(initialStyle);
+    expect(screen.getByRole('button', { name: /Practice range 1,/ }).props.style).toBe(
+      initialStyle,
+    );
   });
 
   it('re-renders only speed buttons whose selected state changes', async () => {
@@ -185,5 +137,25 @@ describe('practice controls', () => {
     });
     await fireEvent.press(button);
     expect(onPress).not.toHaveBeenCalled();
+  });
+
+  it('shows only the silent countdown number and exposes a cancel action', async () => {
+    const onPress = jest.fn();
+    const screen = await render(
+      <PlaybackButton
+        countdownRemainingSeconds={5}
+        disabled={false}
+        onPress={onPress}
+        playing={false}
+      />,
+    );
+    const button = screen.getByRole('button', {
+      name: 'Starting in 5 seconds. Tap to cancel.',
+    });
+
+    expect(screen.getByText('5')).toBeTruthy();
+    expect(screen.queryByText('Play')).toBeNull();
+    await fireEvent.press(button);
+    expect(onPress).toHaveBeenCalledTimes(1);
   });
 });

@@ -105,7 +105,7 @@ describe('WaveformScrubber', () => {
     jest.restoreAllMocks();
   });
 
-  test('renders compact paths, a 30-second viewport, and one overview window', async () => {
+  test('renders compact paths, a 60-second viewport, and one overview window', async () => {
     const screen = await render(
       <WaveformScrubber
         amplitudes={amplitudes}
@@ -131,12 +131,12 @@ describe('WaveformScrubber', () => {
       screen.getByTestId('waveform-playhead', {
         includeHiddenElements: true,
       }).props.x1,
-    ).toBe(1_500);
+    ).toBe(750);
     expect(
       screen.getByTestId('waveform-overview-window', { includeHiddenElements: true }).props,
-    ).toEqual(expect.objectContaining({ x: 0, width: 75 }));
+    ).toEqual(expect.objectContaining({ x: 0, width: 150 }));
     expect(scrubber.props.accessibilityLabel).toBe(
-      'Waveform position 0:30 of 2:00. Showing 0:00 to 0:30.',
+      'Waveform position 0:30 of 2:00. Showing 0:00 to 1:00.',
     );
   });
 
@@ -185,8 +185,8 @@ describe('WaveformScrubber', () => {
 
     expect(onScrubStart).toHaveBeenCalledTimes(1);
     expect(onSeekRequested).not.toHaveBeenCalled();
-    expect(onSeekPreview).toHaveBeenNthCalledWith(1, 24_000);
-    expect(onSeekPreview).toHaveBeenNthCalledWith(2, 21_000);
+    expect(onSeekPreview).toHaveBeenNthCalledWith(1, 48_000);
+    expect(onSeekPreview).toHaveBeenNthCalledWith(2, 42_000);
     expect(
       screen.getByTestId('waveform-playhead', {
         includeHiddenElements: true,
@@ -196,7 +196,7 @@ describe('WaveformScrubber', () => {
     await fireEvent(scrubber, 'responderRelease', gestureEvent(360));
 
     expect(onSeekRequested).toHaveBeenCalledTimes(1);
-    expect(onSeekRequested).toHaveBeenCalledWith(30_000);
+    expect(onSeekRequested).toHaveBeenCalledWith(60_000);
   });
 
   test('sends one final seek for a tap', async () => {
@@ -216,7 +216,7 @@ describe('WaveformScrubber', () => {
     await fireEvent(scrubber, 'responderRelease', gestureEvent(50));
 
     expect(onSeekRequested).toHaveBeenCalledTimes(1);
-    expect(onSeekRequested).toHaveBeenCalledWith(7_500);
+    expect(onSeekRequested).toHaveBeenCalledWith(15_000);
   });
 
   test('notifies the editor when Android terminates a drag', async () => {
@@ -287,11 +287,11 @@ describe('WaveformScrubber', () => {
     await fireEvent(overview, 'responderGrant', gestureEvent(150));
     expect(
       screen.getByTestId('waveform-overview-window', { includeHiddenElements: true }).props.x,
-    ).toBe(125);
+    ).toBe(100);
     await fireEvent(overview, 'responderMove', gestureEvent(220));
     expect(
       screen.getByTestId('waveform-overview-window', { includeHiddenElements: true }).props.x,
-    ).toBe(150);
+    ).toBe(100);
     expect(onSeekRequested).not.toHaveBeenCalled();
   });
 
@@ -315,15 +315,15 @@ describe('WaveformScrubber', () => {
     const window = screen.getByTestId('waveform-overview-window', {
       includeHiddenElements: true,
     });
-    expect(window.props.width).toBeCloseTo(30);
-    expect(window.props.x).toBeCloseTo(10);
+    expect(window.props.width).toBeCloseTo(60);
+    expect(window.props.x).toBeCloseTo(20);
   });
 
   test('automatically follows playback after the playhead leaves the viewport', async () => {
     const screen = await render(
       <WaveformScrubber
         amplitudes={amplitudes}
-        currentTimeMs={29_000}
+        currentTimeMs={59_000}
         durationMs={120_000}
         onSeekRequested={jest.fn()}
       />,
@@ -334,7 +334,7 @@ describe('WaveformScrubber', () => {
     await screen.rerender(
       <WaveformScrubber
         amplitudes={amplitudes}
-        currentTimeMs={31_000}
+        currentTimeMs={61_000}
         durationMs={120_000}
         isPlaying
         onSeekRequested={jest.fn()}
@@ -344,7 +344,7 @@ describe('WaveformScrubber', () => {
     await waitFor(() => {
       expect(
         screen.getByTestId('waveform-overview-window', { includeHiddenElements: true }).props.x,
-      ).toBeCloseTo(44.17, 1);
+      ).toBeCloseTo(86.67, 1);
     });
   });
 

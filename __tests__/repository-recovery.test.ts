@@ -1,5 +1,5 @@
-import type { DanceProject, StoredWaveform } from '@/domain/project';
-import { createEmptySegments } from '@/domain/segment';
+import type { DanceProject, LegacyDanceProject, StoredWaveform } from '@/domain/project';
+import { createDefaultPracticeMarkers, createEmptySegments } from '@/domain/segment';
 import {
   type FinalizeImportInput,
   ProjectRepository,
@@ -262,7 +262,7 @@ function parentUri(uri: string): string {
 
 function makeProject(id = PROJECT_ID, updatedAtIso = '2026-07-30T10:00:00.000Z'): DanceProject {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     id,
     name: 'Practice',
     createdAtIso: '2026-07-30T10:00:00.000Z',
@@ -275,6 +275,19 @@ function makeProject(id = PROJECT_ID, updatedAtIso = '2026-07-30T10:00:00.000Z')
     sourceSizeBytes: 1_000,
     selectedRate: 1,
     leadInMs: 6_000,
+    practiceMarkers: createDefaultPracticeMarkers(120_000),
+  };
+}
+
+function makeLegacyProject(
+  id = PROJECT_ID,
+  updatedAtIso = '2026-07-30T10:00:00.000Z',
+): LegacyDanceProject {
+  const current = makeProject(id, updatedAtIso);
+  const { practiceMarkers: _practiceMarkers, ...shared } = current;
+  return {
+    ...shared,
+    schemaVersion: 1,
     segments: createEmptySegments(),
   };
 }
@@ -391,7 +404,7 @@ describe('Android project repository and recovery', () => {
     const fileSystem = new MemoryStorageFileSystem();
     const { layout, repository } = makeRepository(fileSystem);
     layout.ensureBaseDirectories();
-    const legacyProject = { ...makeProject() } as Partial<DanceProject>;
+    const legacyProject = { ...makeLegacyProject() } as Partial<LegacyDanceProject>;
     delete legacyProject.leadInMs;
     fileSystem.ensureDirectory(layout.projectDirectoryUri(PROJECT_ID));
     fileSystem.putFile(layout.projectMetadataUri(PROJECT_ID), JSON.stringify(legacyProject));
@@ -401,6 +414,38 @@ describe('Android project repository and recovery', () => {
     await repository.initialize();
 
     expect(repository.get(PROJECT_ID)?.leadInMs).toBe(6_000);
+    expect(repository.get(PROJECT_ID)?.practiceMarkers).toEqual(
+      createDefaultPracticeMarkers(120_000),
+    );
+    expect(JSON.parse(await fileSystem.readText(layout.projectMetadataUri(PROJECT_ID)))).toEqual(
+      expect.objectContaining({
+        schemaVersion: 2,
+        createdAtIso: legacyProject.createdAtIso,
+        updatedAtIso: legacyProject.updatedAtIso,
+        practiceMarkers: createDefaultPracticeMarkers(120_000),
+      }),
+    );
+  });
+
+  test('restores schema-v1 metadata and fails initialization when migration cannot commit', async () => {
+    const fileSystem = new MemoryStorageFileSystem();
+    const { layout, repository } = makeRepository(fileSystem);
+    layout.ensureBaseDirectories();
+    const legacyProject = makeLegacyProject();
+    fileSystem.ensureDirectory(layout.projectDirectoryUri(PROJECT_ID));
+    fileSystem.putFile(layout.projectMetadataUri(PROJECT_ID), JSON.stringify(legacyProject));
+    fileSystem.putFile(layout.projectAudioUri(PROJECT_ID), 'audio', 32);
+    fileSystem.putFile(layout.projectWaveformUri(PROJECT_ID), JSON.stringify(waveformFile()));
+    fileSystem.failNextFileMoveTo(layout.projectMetadataUri(PROJECT_ID), true);
+
+    await expect(repository.initialize()).rejects.toMatchObject({
+      code: 'E_PROJECT_METADATA_CORRUPT',
+    });
+
+    expect(JSON.parse(await fileSystem.readText(layout.projectMetadataUri(PROJECT_ID)))).toEqual(
+      legacyProject,
+    );
+    expect(fileSystem.fileExists(layout.projectMetadataBackupUri(PROJECT_ID))).toBe(true);
   });
 
   test('ignores corrupt project metadata and reports it without crashing discovery', async () => {
@@ -532,6 +577,7 @@ describe('Android project repository and recovery', () => {
     expect(project.durationMs).toBe(120_000);
     expect(project.leadInMs).toBe(6_000);
     expect(project.waveformStatus).toBe('pending');
+    expect(project.practiceMarkers).toEqual(createDefaultPracticeMarkers(120_000));
     expect(fileSystem.directoryExists(layout.importDirectoryUri(PROJECT_ID))).toBe(false);
     expect(fileSystem.directoryExists(layout.projectDirectoryUri(PROJECT_ID))).toBe(true);
     expect(fileSystem.fileExists(layout.projectAudioUri(PROJECT_ID))).toBe(true);
@@ -977,9 +1023,15 @@ describe('Android project repository and recovery', () => {
     expect(repository.get(PROJECT_ID)?.selectedRate).toBe(0.6);
     await repository.updateLeadInMs(PROJECT_ID, 2_000);
     expect(repository.get(PROJECT_ID)?.leadInMs).toBe(2_000);
+    const practiceMarkers = {
+      startMs: [0, 10_000, null, null, null, null] as const,
+      finalEndMs: 20_000,
+    };
+    await repository.updatePracticeMarkers(PROJECT_ID, practiceMarkers);
+    expect(repository.get(PROJECT_ID)?.practiceMarkers).toEqual(practiceMarkers);
     expect(
       JSON.parse(await fileSystem.readText(layout.projectMetadataUri(PROJECT_ID))),
-    ).toMatchObject({ selectedRate: 0.6, leadInMs: 2_000 });
+    ).toMatchObject({ selectedRate: 0.6, leadInMs: 2_000, practiceMarkers });
     await repository.delete(PROJECT_ID);
 
     expect(repository.get(PROJECT_ID)).toBeNull();

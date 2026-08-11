@@ -5,7 +5,7 @@ import { Alert } from 'react-native';
 import ProjectListScreen from '../app';
 import { COPY } from '@/constants/copy';
 import type { DanceProject } from '@/domain/project';
-import { createEmptySegments } from '@/domain/segment';
+import { createDefaultPracticeMarkers } from '@/domain/segment';
 import {
   ImportCoordinatorError,
   type ImportProjectRequest,
@@ -172,7 +172,7 @@ const SELECTION: SelectedMedia = {
 };
 
 const IMPORTED_PROJECT: DanceProject = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   id: 'c733c86b-6877-4986-bd4d-a26392f7dc82',
   name: 'Practice Track',
   createdAtIso: '2026-07-31T12:00:00.000Z',
@@ -185,7 +185,7 @@ const IMPORTED_PROJECT: DanceProject = {
   sourceSizeBytes: SELECTION.sizeBytes,
   selectedRate: 1,
   leadInMs: 6_000,
-  segments: createEmptySegments(),
+  practiceMarkers: createDefaultPracticeMarkers(90_000),
 };
 
 function deferred<Value>(): {

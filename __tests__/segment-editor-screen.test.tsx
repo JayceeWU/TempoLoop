@@ -115,7 +115,7 @@ jest.mock('@/components/WaveformScrubber', () => ({
 }));
 
 const PROJECT: DanceProject = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   id: 'project-1',
   name: 'Warm Up',
   createdAtIso: '2026-07-30T12:00:00.000Z',
@@ -128,17 +128,10 @@ const PROJECT: DanceProject = {
   sourceSizeBytes: 1_024,
   selectedRate: 0.8,
   leadInMs: 6_000,
-  segments: [
-    { id: 'segment-1', index: 0, startMs: 10_000, endMs: 20_000 },
-    { id: 'segment-2', index: 1, startMs: 15_000, endMs: 25_000 },
-    { id: 'segment-3', index: 2, startMs: null, endMs: null },
-    { id: 'segment-4', index: 3, startMs: null, endMs: null },
-    { id: 'segment-5', index: 4, startMs: null, endMs: null },
-    { id: 'segment-6', index: 5, startMs: null, endMs: null },
-    { id: 'segment-7', index: 6, startMs: null, endMs: null },
-    { id: 'segment-8', index: 7, startMs: null, endMs: null },
-    { id: 'segment-9', index: 8, startMs: null, endMs: null },
-  ],
+  practiceMarkers: {
+    startMs: [0, 5_000, null, null, null, null],
+    finalEndMs: 90_000,
+  },
 };
 
 const WAVEFORM: StoredWaveform = {
@@ -158,6 +151,7 @@ const READY_SNAPSHOT: PlaybackSnapshot = {
   clipStartMs: 0,
   clipEndMs: null,
   rate: 1,
+  countdownRemainingSeconds: null,
   commandGeneration: 1,
 };
 
@@ -194,9 +188,9 @@ jest.mock('@/playback/useTempoLoopPlayer', () => ({
 }));
 
 const mockInitialize = jest.fn(async () => undefined);
-const mockUpdateSegments = jest.fn<
+const mockUpdatePracticeMarkers = jest.fn<
   Promise<void>,
-  [projectId: string, segments: DanceProject['segments']]
+  [projectId: string, markers: DanceProject['practiceMarkers']]
 >(async () => undefined);
 
 async function renderPreparedEditor() {
@@ -204,7 +198,7 @@ async function renderPreparedEditor() {
 
   await waitFor(() => {
     expect(screen.getByText('Test Waveform')).toBeTruthy();
-    expect(screen.getByLabelText('Segment 9')).toBeTruthy();
+    expect(screen.getByLabelText('Final End')).toBeTruthy();
     expect(mockEnterEditor).toHaveBeenCalledWith({
       projectId: PROJECT.id,
       audioUri: 'file:///documents/TempoLoop/projects/project-1/audio.m4a',
@@ -217,7 +211,7 @@ async function renderPreparedEditor() {
   mockSeekEditor.mockClear();
   mockGetCurrentPositionMs.mockClear();
   mockDeactivate.mockClear();
-  mockUpdateSegments.mockClear();
+  mockUpdatePracticeMarkers.mockClear();
   mockRouterBack.mockClear();
   mockRouterReplace.mockClear();
   mockNavigationDispatch.mockClear();
@@ -263,7 +257,7 @@ beforeEach(() => {
     pendingProjectId: null,
     error: null,
     initialize: mockInitialize,
-    updateSegments: mockUpdateSegments,
+    updatePracticeMarkers: mockUpdatePracticeMarkers,
   });
 });
 
@@ -281,11 +275,11 @@ describe('segment editor screen', () => {
 
     await waitFor(() => expect(screen.getByText('Building waveform 0%')).toBeTruthy());
     expect(screen.getByRole('button', { name: 'Play' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'Set Segment 1 start' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Set Start 1' })).toBeEnabled();
     expect(waveformLoader.load).not.toHaveBeenCalled();
   });
 
-  it('keeps the compact audio panel outside the segment scroller and renders nine rows', async () => {
+  it('keeps the compact audio panel outside the marker scroller and renders seven rows', async () => {
     const screen = await renderPreparedEditor();
 
     expect(screen.getByText('00:04 / 01:30')).toBeTruthy();
@@ -296,9 +290,10 @@ describe('segment editor screen', () => {
         'segment-editor-audio-panel',
       ),
     ).toBeNull();
-    for (let segment = 1; segment <= 9; segment += 1) {
-      expect(screen.getByLabelText(`Segment ${segment}`)).toBeTruthy();
+    for (let start = 1; start <= 6; start += 1) {
+      expect(screen.getByLabelText(`Start ${start}`)).toBeTruthy();
     }
+    expect(screen.getByLabelText('Final End')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
   });
 
@@ -306,44 +301,41 @@ describe('segment editor screen', () => {
     const screen = await renderPreparedEditor();
 
     mockGetCurrentPositionMs.mockReturnValueOnce(10_349.6);
-    await fireEvent.press(screen.getByRole('button', { name: 'Set Segment 3 start' }));
-    expect(screen.getByText('Start set to 00:10')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    await fireEvent.press(screen.getByRole('button', { name: 'Set Start 3' }));
+    expect(screen.getByText('Start 3 set to 00:10')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
 
     mockGetCurrentPositionMs.mockReturnValueOnce(PROJECT.durationMs + 1_000);
-    await fireEvent.press(screen.getByRole('button', { name: 'Set Segment 3 end' }));
-    expect(screen.getByText('End set to 01:30')).toBeTruthy();
+    await fireEvent.press(screen.getByRole('button', { name: 'Set Final End' }));
+    expect(screen.getByText('Final End set to 01:30')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
 
     await fireEvent.press(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(mockUpdateSegments).toHaveBeenCalledTimes(1));
-    expect(mockUpdateSegments.mock.calls[0]?.[1][2]).toEqual({
-      id: 'segment-3',
-      index: 2,
-      startMs: 10_350,
-      endMs: PROJECT.durationMs,
+    await waitFor(() => expect(mockUpdatePracticeMarkers).toHaveBeenCalledTimes(1));
+    expect(mockUpdatePracticeMarkers.mock.calls[0]?.[1]).toEqual({
+      startMs: [0, 5_000, 10_350, null, null, null],
+      finalEndMs: PROJECT.durationMs,
     });
   });
 
-  it('highlights reversed ranges, clears both endpoints, and accepts overlapping ranges', async () => {
+  it('highlights non-increasing markers and clears only the selected point', async () => {
     const screen = await renderPreparedEditor();
 
     mockGetCurrentPositionMs.mockReturnValueOnce(18_000);
-    await fireEvent.press(screen.getByRole('button', { name: 'Set Segment 3 start' }));
-    mockGetCurrentPositionMs.mockReturnValueOnce(12_000);
-    await fireEvent.press(screen.getByRole('button', { name: 'Set Segment 3 end' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Set Start 3' }));
+    mockGetCurrentPositionMs.mockReturnValueOnce(20_000);
+    await fireEvent.press(screen.getByRole('button', { name: 'Set Start 2' }));
 
-    expect(screen.getByText('Start must be earlier than end.')).toBeTruthy();
-    expect(screen.getByTestId('segment-time-row-2')).toHaveStyle({ borderWidth: 2 });
+    expect(screen.getByText('Each marker must be later than the previous marker.')).toBeTruthy();
+    expect(screen.getByTestId('practice-marker-row-start-3')).toHaveStyle({ borderWidth: 2 });
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
 
-    await fireEvent.press(screen.getByRole('button', { name: 'Clear Segment 3' }));
-    expect(screen.queryByText('Start must be earlier than end.')).toBeNull();
+    await fireEvent.press(screen.getByRole('button', { name: 'Clear Start 3' }));
+    expect(screen.queryByText('Each marker must be later than the previous marker.')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
 
-    mockGetCurrentPositionMs.mockReturnValueOnce(12_000);
-    await fireEvent.press(screen.getByRole('button', { name: 'Set Segment 3 start' }));
-    mockGetCurrentPositionMs.mockReturnValueOnce(18_000);
-    await fireEvent.press(screen.getByRole('button', { name: 'Set Segment 3 end' }));
+    mockGetCurrentPositionMs.mockReturnValueOnce(30_000);
+    await fireEvent.press(screen.getByRole('button', { name: 'Set Start 3' }));
 
     expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
   });
@@ -375,7 +367,7 @@ describe('segment editor screen', () => {
   it('uses one dirty-draft discard flow for Android back and leaves persisted data unchanged', async () => {
     const screen = await renderPreparedEditor();
     mockGetCurrentPositionMs.mockReturnValueOnce(30_000);
-    await fireEvent.press(screen.getByRole('button', { name: 'Set Segment 4 start' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Set Start 4' }));
 
     const action = { type: 'GO_BACK' };
     await act(async () => {
@@ -400,33 +392,31 @@ describe('segment editor screen', () => {
     expect(mockPause).toHaveBeenCalledTimes(1);
     expect(mockDeactivate).toHaveBeenCalledTimes(1);
     expect(mockNavigationDispatch).toHaveBeenCalledWith(action);
-    expect(mockUpdateSegments).not.toHaveBeenCalled();
+    expect(mockUpdatePracticeMarkers).not.toHaveBeenCalled();
   });
 
   it('pauses, atomically saves a deep copy, invalidates preparation, and returns to practice', async () => {
     const screen = await renderPreparedEditor();
     mockGetCurrentPositionMs.mockReturnValueOnce(30_000);
-    await fireEvent.press(screen.getByRole('button', { name: 'Set Segment 4 start' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Set Start 3' }));
     mockGetCurrentPositionMs.mockReturnValueOnce(40_000);
-    await fireEvent.press(screen.getByRole('button', { name: 'Set Segment 4 end' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Set Start 4' }));
 
     await fireEvent.press(screen.getByRole('button', { name: 'Save' }));
 
     await waitFor(() => {
-      expect(mockUpdateSegments).toHaveBeenCalledTimes(1);
+      expect(mockUpdatePracticeMarkers).toHaveBeenCalledTimes(1);
       expect(mockDeactivate).toHaveBeenCalledTimes(1);
       expect(mockRouterBack).toHaveBeenCalledTimes(1);
       expect(mockNavigationDispatch).toHaveBeenCalledWith({ type: 'GO_BACK' });
     });
     expect(mockPause).toHaveBeenCalledTimes(1);
-    const saved = mockUpdateSegments.mock.calls[0]?.[1];
-    expect(saved).not.toBe(PROJECT.segments);
-    expect(saved?.[0]).not.toBe(PROJECT.segments[0]);
-    expect(saved?.[3]).toEqual({
-      id: 'segment-4',
-      index: 3,
-      startMs: 30_000,
-      endMs: 40_000,
+    const saved = mockUpdatePracticeMarkers.mock.calls[0]?.[1];
+    expect(saved).not.toBe(PROJECT.practiceMarkers);
+    expect(saved?.startMs).not.toBe(PROJECT.practiceMarkers.startMs);
+    expect(saved).toEqual({
+      startMs: [0, 5_000, 30_000, 40_000, null, null],
+      finalEndMs: 90_000,
     });
   });
 
