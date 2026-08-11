@@ -31,12 +31,14 @@ describe('LeadInSelector', () => {
     [4, 4_000],
     [5, 6_000],
     [6, 6_000],
-    [7, 6_000],
+    [7, 8_000],
+    [8, 8_000],
+    [9, 8_000],
   ])('snaps %s seconds to an allowed whole-second value', (seconds, expectedMs) => {
     expect(snapLeadInSeconds(seconds)).toBe(expectedMs);
   });
 
-  it('shows the four integer labels and exposes an adjustable accessibility value', async () => {
+  it('shows the five integer labels and exposes an adjustable accessibility value', async () => {
     const onSelectLeadIn = jest.fn();
     const screen = await render(
       <LeadInSelector onSelectLeadIn={onSelectLeadIn} selectedLeadInMs={4_000} />,
@@ -49,9 +51,10 @@ describe('LeadInSelector', () => {
     expect(screen.getByText('2s', { includeHiddenElements: true })).toBeTruthy();
     expect(screen.getByText('4s', { includeHiddenElements: true })).toBeTruthy();
     expect(screen.getByText('6s', { includeHiddenElements: true })).toBeTruthy();
+    expect(screen.getByText('8s', { includeHiddenElements: true })).toBeTruthy();
     expect(selector.props.accessibilityValue).toEqual({
       min: 0,
-      max: 6,
+      max: 8,
       now: 4,
       text: '4 seconds',
     });

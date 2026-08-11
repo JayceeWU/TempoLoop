@@ -5,6 +5,7 @@ import { colors, fontSizes, fontWeights, radii, spacing } from '@/constants/them
 
 export interface PlaybackButtonProps {
   readonly playing: boolean;
+  readonly countdownRemainingSeconds?: number | null;
   readonly disabled: boolean;
   readonly pending?: boolean;
   readonly onPress: () => void;
@@ -12,14 +13,22 @@ export interface PlaybackButtonProps {
 
 export function PlaybackButton({
   playing,
+  countdownRemainingSeconds = null,
   disabled,
   pending = false,
   onPress,
 }: PlaybackButtonProps) {
-  const label = playing ? COPY.practice.pause : COPY.practice.play;
-  const accessibilityLabel = playing
-    ? COPY.practice.pauseAccessibilityLabel
-    : COPY.practice.playAccessibilityLabel;
+  const isCountingDown = countdownRemainingSeconds !== null;
+  const label = isCountingDown
+    ? String(countdownRemainingSeconds)
+    : playing
+      ? COPY.practice.pause
+      : COPY.practice.play;
+  const accessibilityLabel = isCountingDown
+    ? COPY.practice.countdownAccessibilityLabel(countdownRemainingSeconds)
+    : playing
+      ? COPY.practice.pauseAccessibilityLabel
+      : COPY.practice.playAccessibilityLabel;
   const isDisabled = disabled || pending;
 
   return (

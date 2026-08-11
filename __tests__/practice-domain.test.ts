@@ -37,6 +37,7 @@ const READY_SNAPSHOT: PlaybackSnapshot = {
   clipStartMs: 0,
   clipEndMs: null,
   rate: 1,
+  countdownRemainingSeconds: null,
   commandGeneration: 1,
 };
 
@@ -72,6 +73,7 @@ describe('practice playback intent', () => {
   const selectedRange = {
     playFromMs: 4_000,
     stopAtMs: 20_000,
+    countdownMs: 0,
   };
 
   it('plays a new range from ready and pauses while playing', () => {
@@ -79,6 +81,9 @@ describe('practice playback intent', () => {
     expect(getPracticePlaybackIntent({ ...READY_SNAPSHOT, status: 'playing' }, selectedRange)).toBe(
       'pause',
     );
+    expect(
+      getPracticePlaybackIntent({ ...READY_SNAPSHOT, status: 'countdown' }, selectedRange),
+    ).toBe('pause');
   });
 
   it('restarts a paused range instead of resuming its current position', () => {

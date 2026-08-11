@@ -132,6 +132,8 @@ export const COPY = {
     pause: 'Pause',
     playAccessibilityLabel: 'Play selected segment',
     pauseAccessibilityLabel: 'Pause playback',
+    countdownAccessibilityLabel: (seconds: number) =>
+      `Starting in ${seconds} ${seconds === 1 ? 'second' : 'seconds'}. Tap to cancel.`,
     loadingAudio: 'Preparing audio...',
     audioUnavailable: 'The project audio is not ready. Try loading it again.',
     retryAudio: 'Try Again',

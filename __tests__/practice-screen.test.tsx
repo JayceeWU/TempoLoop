@@ -126,6 +126,7 @@ function idleSnapshot(): PlaybackSnapshot {
     clipStartMs: 0,
     clipEndMs: null,
     rate: 1,
+    countdownRemainingSeconds: null,
     commandGeneration: 0,
   };
 }
@@ -193,11 +194,13 @@ function installPlayerBehavior(): void {
 async function renderPrepared(project: DanceProject = PROJECT) {
   useProjectStore.setState({ projects: [project] });
   const screen = await render(<PracticeProjectScreen />);
+  const firstSegmentStartMs = project.segments[0].startMs ?? 0;
   await waitFor(() => {
     expect(mockPreparePracticeSegment).toHaveBeenCalledWith({
       segmentIndex: 0,
-      clipStartMs: Math.max(0, 10_000 - project.leadInMs),
+      clipStartMs: Math.max(0, firstSegmentStartMs - project.leadInMs),
       clipEndMs: 20_000,
+      countdownMs: Math.max(0, project.leadInMs - firstSegmentStartMs),
       rate: project.selectedRate,
     });
   });
@@ -320,6 +323,7 @@ describe('Android practice project screen', () => {
       segmentIndex: 1,
       clipStartMs: 24_000,
       clipEndMs: 40_000,
+      countdownMs: 0,
       rate: 1,
     });
     expect(mockTogglePractice).not.toHaveBeenCalled();
@@ -423,6 +427,7 @@ describe('Android practice project screen', () => {
       segmentIndex: 0,
       clipStartMs: 4_000,
       clipEndMs: 20_000,
+      countdownMs: 0,
       rate: 1,
     });
     expect(mockTogglePractice).toHaveBeenCalledTimes(1);
@@ -439,11 +444,43 @@ describe('Android practice project screen', () => {
       segmentIndex: 0,
       clipStartMs: 4_000,
       clipEndMs: 20_000,
+      countdownMs: 0,
       rate: 1,
     });
     expect(mockTogglePractice).toHaveBeenCalledTimes(1);
     expect(mockSnapshot.status).toBe('ready');
     expect(mockSnapshot.sourcePositionMs).toBe(4_000);
+  });
+
+  it('shows the missing lead-in as a silent countdown only on the Play button', async () => {
+    const segments = [...PROJECT.segments] as DanceProject['segments'];
+    segments[0] = { ...segments[0], startMs: 3_000, endMs: 20_000 };
+    const project = { ...PROJECT, leadInMs: 8_000 as const, segments };
+    const screen = await renderPrepared(project);
+    mockPreparePracticeSegment.mockClear();
+    mockTogglePractice.mockImplementationOnce(async () => {
+      mockPatchSnapshot({
+        status: 'countdown',
+        countdownRemainingSeconds: 5,
+        commandGeneration: mockSnapshot.commandGeneration + 1,
+      });
+      return true;
+    });
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Play selected segment' }));
+
+    expect(mockPreparePracticeSegment).toHaveBeenCalledWith({
+      segmentIndex: 0,
+      clipStartMs: 0,
+      clipEndMs: 20_000,
+      countdownMs: 5_000,
+      rate: 1,
+    });
+    expect(
+      screen.getByRole('button', { name: 'Starting in 5 seconds. Tap to cancel.' }),
+    ).toBeEnabled();
+    expect(screen.getByRole('adjustable', { name: 'Seconds before segment start' })).toBeEnabled();
+    expectConfiguredPracticeChoicesEnabled(screen);
   });
 
   it.each([
@@ -504,6 +541,7 @@ describe('Android practice project screen', () => {
       segmentIndex: 0,
       clipStartMs: 6_000,
       clipEndMs: 20_000,
+      countdownMs: 0,
       rate: 1,
     });
     expect(mockTogglePractice).toHaveBeenCalledTimes(1);
@@ -541,6 +579,7 @@ describe('Android practice project screen', () => {
       segmentIndex: 0,
       clipStartMs: 8_000,
       clipEndMs: 20_000,
+      countdownMs: 0,
       rate: 1,
     });
     expect(mockPreparePracticeSegment.mock.invocationCallOrder[0]).toBeLessThan(

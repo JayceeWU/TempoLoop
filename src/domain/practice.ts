@@ -43,14 +43,20 @@ export function selectInitialPracticeSegment(project: DanceProject): SegmentInde
 }
 
 export function isPracticeAudioReady(status: PlaybackStatus): boolean {
-  return status === 'ready' || status === 'playing' || status === 'paused' || status === 'ended';
+  return (
+    status === 'ready' ||
+    status === 'countdown' ||
+    status === 'playing' ||
+    status === 'paused' ||
+    status === 'ended'
+  );
 }
 
 export function getPracticePlaybackIntent(
   snapshot: PlaybackSnapshot,
   _selectedRange: PlaybackRange,
 ): PracticePlaybackIntent | null {
-  if (snapshot.status === 'playing') {
+  if (snapshot.status === 'playing' || snapshot.status === 'countdown') {
     return 'pause';
   }
 

@@ -63,7 +63,7 @@ function LeadInSelectorComponent({
       accessibilityState={{ disabled }}
       accessibilityValue={{
         min: 0,
-        max: 6,
+        max: 8,
         now: selectedSeconds,
         text: COPY.practice.leadInValue(selectedSeconds),
       }}
@@ -74,7 +74,7 @@ function LeadInSelectorComponent({
       <NativeSlider
         disabled={disabled}
         maximumTrackTintColor={colors.border}
-        maximumValue={6}
+        maximumValue={8}
         minimumTrackTintColor={colors.accent}
         minimumValue={0}
         onValueChange={handleValueChange}

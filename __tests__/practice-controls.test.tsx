@@ -186,4 +186,24 @@ describe('practice controls', () => {
     await fireEvent.press(button);
     expect(onPress).not.toHaveBeenCalled();
   });
+
+  it('shows only the silent countdown number and exposes a cancel action', async () => {
+    const onPress = jest.fn();
+    const screen = await render(
+      <PlaybackButton
+        countdownRemainingSeconds={5}
+        disabled={false}
+        onPress={onPress}
+        playing={false}
+      />,
+    );
+    const button = screen.getByRole('button', {
+      name: 'Starting in 5 seconds. Tap to cancel.',
+    });
+
+    expect(screen.getByText('5')).toBeTruthy();
+    expect(screen.queryByText('Play')).toBeNull();
+    await fireEvent.press(button);
+    expect(onPress).toHaveBeenCalledTimes(1);
+  });
 });

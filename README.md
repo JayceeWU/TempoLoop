@@ -1,6 +1,6 @@
 # TempoLoop
 
-TempoLoop is a private, offline Android 7.0+ dance-practice app. It can extract music from a gallery video or directly import an audio file, normalize the result to an audio-only M4A in the app sandbox, and let one local user define nine independent, overlapping practice segments. Each segment can play at `1.0x`, `0.9x`, `0.8x`, `0.7x`, or `0.6x`, with a per-project lead-in of `0`, `2`, `4`, or `6` seconds.
+TempoLoop is a private, offline Android 7.0+ dance-practice app. It can extract music from a gallery video or directly import an audio file, normalize the result to an audio-only M4A in the app sandbox, and let one local user define nine independent, overlapping practice segments. Each segment can play at `1.0x`, `0.9x`, `0.8x`, `0.7x`, or `0.6x`, with a per-project lead-in of `0`, `2`, `4`, `6`, or `8` seconds.
 
 Version 1 is Android-only, English-only, and portrait-only. It has no account, analytics, cloud sync, server, background playback, lock-screen controls, broad media-library access, or Google Play release flow.
 
@@ -13,14 +13,14 @@ TempoLoop is especially useful for dance teachers during class. Preparing the mu
 1. Use `Extract from Video` to choose a gallery video, or `Import Audio` to choose a supported audio file.
 2. Name the Project. TempoLoop creates and validates a private `audio.m4a` copy, then opens the Project immediately. It builds the 2,048-sample waveform asynchronously while TempoLoop remains in the foreground; the selected source is never modified.
 3. Open `Edit Segments` and define up to nine independent ranges. Overlapping ranges are allowed, while incomplete or invalid ranges cannot be saved.
-4. On the practice screen, choose one of five playback speeds and a `0`, `2`, `4`, or `6` second lead-in.
-5. Press Play to start from `max(0, segment start - lead-in)` and stop at the saved segment end. Pressing Pause resets the range to that same start position, so the next Play begins from the start instead of resuming from the paused position. Segment completion also resets the range for another repetition.
+4. On the practice screen, choose one of five playback speeds and a `0`, `2`, `4`, `6`, or `8` second lead-in.
+5. Press Play to start from `max(0, segment start - lead-in)`. When the track does not contain the full lead-in, TempoLoop first shows a silent countdown for the missing seconds. Playback continues for two wall-clock seconds after the saved segment end, then resets to the same start position. Pressing Pause also resets the range, so the next Play begins from the start instead of resuming from the paused position.
 
-The Segment Editor keeps its audio controls fixed above the scrolling nine-segment list. Its compact purple waveform shows a 30-second window by default, supports pinch zoom from 10 to 30 seconds, and includes a full-track overview for moving the visible window. Editor playback remains at `1.0x`, and pausing in the editor retains the current position so it can be captured as a segment endpoint.
+The Segment Editor keeps its audio controls fixed above the scrolling nine-segment list. Its compact purple waveform shows a 60-second window by default, supports pinch zoom from 10 to 60 seconds, and includes a full-track overview for moving the visible window. Editor playback remains at `1.0x`, and pausing in the editor retains the current position so it can be captured as a segment endpoint.
 
 ## Architecture
 
-- Expo SDK `57.0.10`, React Native `0.86.2`, Expo Router, strict TypeScript, Zustand, Zod, and `@expo/ui` provide the application shell, screens, state, validated metadata, and the discrete native lead-in slider.
+- Expo SDK `57.0.12`, React Native `0.86.2`, Expo Router, strict TypeScript, Zustand, Zod, and `@expo/ui` provide the application shell, screens, state, validated metadata, and the discrete native lead-in slider.
 - `Extract from Video` uses a permission-free native gallery picker. It prefers Android Photo Picker, falls back to the device gallery on older phones, then falls back to a video document picker initialized at `Internal storage/Pictures/Screenshots` when possible.
 - `Import Audio` uses `expo-document-picker` `57.0.1` with audio MIME types plus the opaque/ISO-segment MIME types used by Android providers for `.m4s`, and `copyToCacheDirectory: false`. Common MP3, M4A/AAC, WAV, FLAC, and OGG/Opus sources work when the device supplies the required decoder. An `.m4s` file whose contents are actually MP3 is accepted based on its native audio track, not its extension.
 - Both paths return only an opaque `content://` or local `file://` source. JavaScript never opens, copies, converts, or deletes the selected media.
@@ -51,11 +51,11 @@ The committed lockfile currently resolves:
 
 | Dependency           | Exact version |
 | -------------------- | ------------- |
-| Expo                 | `57.0.9`      |
+| Expo                 | `57.0.12`     |
 | React Native         | `0.86.2`      |
 | expo-audio           | `57.0.3`      |
 | expo-document-picker | `57.0.1`      |
-| @expo/ui             | `57.0.8`      |
+| @expo/ui             | `57.0.10`     |
 
 Installed `expo-audio` declares Media3 `1.9.0`. `TempoLoopMedia` derives its Transformer dependency from that installed Gradle declaration rather than hard-coding a separate version. The actual Gradle graph is **Not initialized/tested** in the current Windows environment because no JDK or Android SDK is installed; CI's `verifyMedia3Versions` task must resolve exactly one Media3 version, `1.9.0`, before the debug build can pass.
 
@@ -163,7 +163,7 @@ Development APKs have successfully completed EAS builds and have been installed 
 - `content://` imports including approximately 20 MB, 200–300 MB, and 550–600 MiB videos, plus audio at and above the 200 MiB limit.
 - AAC video, video without audio, very short audio, silence, stereo, malformed media, DRM, cancellation, low storage, and force-close recovery.
 - Import and playback memory targets, start latency of 300 ms or less, and persistent playback after the original video is deleted.
-- All five rates, useful pitch correction, every `0/2/4/6` second source-time lead-in, Pause-to-range-start behavior, and segment-end overshoot of 100 ms or less.
+- All five rates, useful pitch correction, every `0/2/4/6/8` second source-time lead-in, silent countdown completion near the start of a track, Pause-to-range-start behavior, and the fixed two-second post-roll.
 - Rapid commands, calls/audio-focus loss, headphone and Bluetooth disconnects, background/foreground transitions, and no automatic resume.
 - Coverage installation with private data retained and a complete Preview flow in airplane mode.
 

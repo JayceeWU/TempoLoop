@@ -133,12 +133,12 @@ describe('segment validation', () => {
     expect(PlaybackRateSchema.safeParse(0.75).success).toBe(false);
   });
 
-  it('accepts only the four project lead-in values', () => {
-    expect([0, 2_000, 4_000, 6_000].every((value) => LeadInMsSchema.safeParse(value).success)).toBe(
-      true,
-    );
+  it('accepts only the five project lead-in values', () => {
     expect(
-      [undefined, -1, 1_000, 2_000.5, 2_500, 6_001].every(
+      [0, 2_000, 4_000, 6_000, 8_000].every((value) => LeadInMsSchema.safeParse(value).success),
+    ).toBe(true);
+    expect(
+      [undefined, -1, 1_000, 2_000.5, 2_500, 8_001].every(
         (value) => !LeadInMsSchema.safeParse(value).success,
       ),
     ).toBe(true);

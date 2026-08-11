@@ -204,6 +204,7 @@ export default function PracticeProjectScreen() {
         segmentIndex: segment.index,
         clipStartMs: range.playFromMs,
         clipEndMs: range.stopAtMs,
+        countdownMs: range.countdownMs,
         rate: currentProject.selectedRate,
       });
       if (!prepared && tokenIsCurrent(token)) {
@@ -291,6 +292,7 @@ export default function PracticeProjectScreen() {
           segmentIndex,
           clipStartMs: range.playFromMs,
           clipEndMs: range.stopAtMs,
+          countdownMs: range.countdownMs,
           rate: playerRef.current.snapshot.rate,
         })
         .catch((error: unknown) => {
@@ -337,7 +339,10 @@ export default function PracticeProjectScreen() {
         return;
       }
 
-      if (playerRef.current.snapshot.status === 'playing') {
+      if (
+        playerRef.current.snapshot.status === 'playing' ||
+        playerRef.current.snapshot.status === 'countdown'
+      ) {
         playerRef.current.pause();
       }
 
@@ -398,7 +403,9 @@ export default function PracticeProjectScreen() {
     if (segment === null) {
       return;
     }
-    const wasPlaying = playerRef.current.snapshot.status === 'playing';
+    const wasActive =
+      playerRef.current.snapshot.status === 'playing' ||
+      playerRef.current.snapshot.status === 'countdown';
     const range = calculatePlaybackRange(segment, leadInMsRef.current);
     const token = focusTokenRef.current;
     const command = prepareCommandRef.current + 1;
@@ -409,10 +416,11 @@ export default function PracticeProjectScreen() {
         segmentIndex: segment.index,
         clipStartMs: range.playFromMs,
         clipEndMs: range.stopAtMs,
+        countdownMs: range.countdownMs,
         rate: playerRef.current.snapshot.rate,
       });
       if (
-        wasPlaying ||
+        wasActive ||
         !prepared ||
         !tokenIsCurrent(token) ||
         prepareCommandRef.current !== command
@@ -575,6 +583,9 @@ export default function PracticeProjectScreen() {
 
       <View style={styles.playbackArea}>
         <PlaybackButton
+          countdownRemainingSeconds={
+            playerOwnsProject ? player.snapshot.countdownRemainingSeconds : null
+          }
           disabled={!playbackEnabled}
           onPress={handleTogglePlayback}
           pending={isEntering || isPreparingSegment || isToggling}

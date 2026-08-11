@@ -158,6 +158,7 @@ const READY_SNAPSHOT: PlaybackSnapshot = {
   clipStartMs: 0,
   clipEndMs: null,
   rate: 1,
+  countdownRemainingSeconds: null,
   commandGeneration: 1,
 };
 

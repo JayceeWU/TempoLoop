@@ -1,6 +1,6 @@
 export const MAX_WAVEFORM_RENDER_BARS = 400;
 export const WAVEFORM_BAR_SLOT_WIDTH = 3;
-export const DEFAULT_WAVEFORM_VIEWPORT_MS = 30_000;
+export const DEFAULT_WAVEFORM_VIEWPORT_MS = 60_000;
 export const MIN_WAVEFORM_VIEWPORT_MS = 10_000;
 
 export type WaveformDownsampleMode = 'maximum' | 'rms';

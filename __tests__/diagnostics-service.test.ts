@@ -20,6 +20,7 @@ const PLAYBACK: PlaybackSnapshot = {
   clipStartMs: 6_000,
   clipEndMs: 20_000,
   rate: 0.8,
+  countdownRemainingSeconds: null,
   commandGeneration: 9,
 };
 

@@ -133,7 +133,7 @@ export function AudioPlayerProvider({ children }: PropsWithChildren) {
   }, [coordinator]);
 
   useEffect(() => {
-    if (snapshot.status !== 'playing') {
+    if (snapshot.status !== 'playing' && snapshot.status !== 'countdown') {
       return undefined;
     }
 

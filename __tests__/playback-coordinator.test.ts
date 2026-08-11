@@ -96,6 +96,7 @@ describe('PlaybackCoordinator', () => {
     for (const coordinator of activeCoordinators.splice(0)) {
       coordinator.dispose();
     }
+    jest.useRealTimers();
   });
 
   it('loads one local source and enters editor mode at exactly 1.0x', async () => {
@@ -128,6 +129,8 @@ describe('PlaybackCoordinator', () => {
   });
 
   it('plays a practice clip and atomically resets to its lead-in at the end', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(0);
     const player = new FakePlayer();
     const coordinator = createCoordinator(player);
     await enterPractice(coordinator, 0.8);
@@ -136,14 +139,16 @@ describe('PlaybackCoordinator', () => {
         segmentIndex: 2,
         clipStartMs: 10_000,
         clipEndMs: 20_000,
+        countdownMs: 0,
         rate: 0.8,
       }),
     ).resolves.toBe(true);
     await expect(coordinator.togglePractice()).resolves.toBe(true);
 
     coordinator.handleNativeStatus(
-      nativeStatus({ currentTime: 19.971, playing: true, playbackRate: 0.8 }),
+      nativeStatus({ currentTime: 20, playing: true, playbackRate: 0.8 }),
     );
+    jest.advanceTimersByTime(2_000);
     await Promise.resolve();
     await Promise.resolve();
 
@@ -171,12 +176,14 @@ describe('PlaybackCoordinator', () => {
       segmentIndex: 0,
       clipStartMs: 4_000,
       clipEndMs: 20_000,
+      countdownMs: 0,
       rate: 1,
     });
     const segmentB = coordinator.preparePracticeSegment({
       segmentIndex: 1,
       clipStartMs: 14_000,
       clipEndMs: 30_000,
+      countdownMs: 0,
       rate: 1,
     });
 
@@ -210,6 +217,7 @@ describe('PlaybackCoordinator', () => {
       segmentIndex: 0,
       clipStartMs: 4_000,
       clipEndMs: 20_000,
+      countdownMs: 0,
       rate: 1,
     });
     player.autoResolveSeeks = false;
@@ -234,6 +242,7 @@ describe('PlaybackCoordinator', () => {
       segmentIndex: 0,
       clipStartMs: 4_000,
       clipEndMs: 20_000,
+      countdownMs: 0,
       rate: 1,
     });
 
@@ -267,6 +276,7 @@ describe('PlaybackCoordinator', () => {
       segmentIndex: 0,
       clipStartMs: 4_000,
       clipEndMs: 20_000,
+      countdownMs: 0,
       rate: 1,
     });
 
@@ -281,6 +291,8 @@ describe('PlaybackCoordinator', () => {
   });
 
   it('lets manual segment selection win a race with the automatic reset seek', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(0);
     const player = new FakePlayer();
     const coordinator = createCoordinator(player);
     await enterPractice(coordinator);
@@ -288,16 +300,19 @@ describe('PlaybackCoordinator', () => {
       segmentIndex: 0,
       clipStartMs: 4_000,
       clipEndMs: 20_000,
+      countdownMs: 0,
       rate: 1,
     });
     await coordinator.togglePractice();
     player.autoResolveSeeks = false;
 
-    coordinator.handleNativeStatus(nativeStatus({ currentTime: 19.971, playing: true }));
+    coordinator.handleNativeStatus(nativeStatus({ currentTime: 20, playing: true }));
+    jest.advanceTimersByTime(2_000);
     const manualSelection = coordinator.preparePracticeSegment({
       segmentIndex: 1,
       clipStartMs: 24_000,
       clipEndMs: 40_000,
+      countdownMs: 0,
       rate: 1,
     });
     player.resolveSeek(0);
@@ -322,6 +337,7 @@ describe('PlaybackCoordinator', () => {
       segmentIndex: 0,
       clipStartMs: 4_000,
       clipEndMs: 20_000,
+      countdownMs: 0,
       rate: 1,
     });
 
@@ -344,6 +360,7 @@ describe('PlaybackCoordinator', () => {
       segmentIndex: 0,
       clipStartMs: 4_000,
       clipEndMs: 20_000,
+      countdownMs: 0,
       rate: 1,
     });
     await coordinator.togglePractice();
@@ -352,6 +369,117 @@ describe('PlaybackCoordinator', () => {
     expect(coordinator.setRate(0.6)).toBe(true);
     expect(player.calls.slice(callCount)).toEqual(['rate:0.6']);
     expect(coordinator.getSnapshot()).toMatchObject({ status: 'playing', rate: 0.6 });
+  });
+
+  it('runs a silent deadline countdown and applies a speed change when playback starts', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(0);
+    const player = new FakePlayer();
+    const coordinator = createCoordinator(player);
+    await enterPractice(coordinator);
+    await coordinator.preparePracticeSegment({
+      segmentIndex: 0,
+      clipStartMs: 0,
+      clipEndMs: 20_000,
+      countdownMs: 5_000,
+      rate: 1,
+    });
+
+    await expect(coordinator.togglePractice()).resolves.toBe(true);
+    expect(coordinator.getSnapshot()).toMatchObject({
+      status: 'countdown',
+      countdownRemainingSeconds: 5,
+    });
+    expect(player.calls.filter((call) => call === 'play')).toHaveLength(0);
+
+    jest.advanceTimersByTime(1_000);
+    expect(coordinator.getSnapshot().countdownRemainingSeconds).toBe(4);
+    expect(coordinator.setRate(0.6)).toBe(true);
+    expect(coordinator.getSnapshot()).toMatchObject({ status: 'countdown', rate: 0.6 });
+
+    jest.advanceTimersByTime(4_000);
+    expect(coordinator.getSnapshot()).toMatchObject({
+      status: 'playing',
+      countdownRemainingSeconds: null,
+      rate: 0.6,
+    });
+    expect(player.calls.filter((call) => call === 'play')).toHaveLength(1);
+  });
+
+  it('cancels a countdown without allowing its stale deadline to start playback', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(0);
+    const player = new FakePlayer();
+    const coordinator = createCoordinator(player);
+    await enterPractice(coordinator);
+    await coordinator.preparePracticeSegment({
+      segmentIndex: 0,
+      clipStartMs: 0,
+      clipEndMs: 20_000,
+      countdownMs: 8_000,
+      rate: 1,
+    });
+
+    await coordinator.togglePractice();
+    await expect(coordinator.togglePractice()).resolves.toBe(true);
+    expect(coordinator.getSnapshot()).toMatchObject({
+      status: 'ready',
+      countdownRemainingSeconds: null,
+    });
+
+    jest.advanceTimersByTime(8_000);
+    expect(player.calls.filter((call) => call === 'play')).toHaveLength(0);
+  });
+
+  it('stops at natural media completion without waiting for the full post-roll', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(0);
+    const player = new FakePlayer();
+    const coordinator = createCoordinator(player);
+    await enterPractice(coordinator);
+    await coordinator.preparePracticeSegment({
+      segmentIndex: 0,
+      clipStartMs: 100_000,
+      clipEndMs: 119_000,
+      countdownMs: 0,
+      rate: 1,
+    });
+    await coordinator.togglePractice();
+
+    coordinator.handleNativeStatus(
+      nativeStatus({ currentTime: 120, didJustFinish: true, playing: false }),
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(coordinator.getSnapshot()).toMatchObject({
+      status: 'ready',
+      sourcePositionMs: 100_000,
+    });
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it('cancels the post-roll when the user pauses', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(0);
+    const player = new FakePlayer();
+    const coordinator = createCoordinator(player);
+    await enterPractice(coordinator);
+    await coordinator.preparePracticeSegment({
+      segmentIndex: 0,
+      clipStartMs: 4_000,
+      clipEndMs: 20_000,
+      countdownMs: 0,
+      rate: 1,
+    });
+    await coordinator.togglePractice();
+    coordinator.handleNativeStatus(nativeStatus({ currentTime: 20, playing: true }));
+
+    coordinator.pause();
+    jest.advanceTimersByTime(2_000);
+
+    expect(coordinator.getSnapshot().status).toBe('paused');
+    expect(player.calls.at(-1)).toBe('pause');
   });
 
   it('clears a retained source by its project id after route deactivation', async () => {
@@ -389,6 +517,7 @@ describe('PlaybackCoordinator', () => {
       segmentIndex: 0,
       clipStartMs: 4_000,
       clipEndMs: 20_000,
+      countdownMs: 0,
       rate: 1,
     });
     await coordinator.togglePractice();
@@ -415,6 +544,7 @@ describe('PlaybackCoordinator', () => {
       segmentIndex: 0,
       clipStartMs: 4_000,
       clipEndMs: 20_000,
+      countdownMs: 0,
       rate: 1,
     });
     await coordinator.togglePractice();
